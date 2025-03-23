@@ -104,7 +104,7 @@ export const getModels = async (
 				const response = responses[idx];
 				const apiConfig = OPENAI_API_CONFIGS[idx.toString()] ?? {};
 
-				let models = Array.isArray(response) ? response : (response?.data ?? []);
+				let models = Array.isArray(response) ? response : response?.data ?? [];
 				models = models.map((model) => ({ ...model, openai: { id: model.id }, urlIdx: idx }));
 
 				const prefixId = apiConfig.prefix_id;
