@@ -3,13 +3,15 @@
 	import {
 		chats,
 		config,
+		models,
 		settings,
+		socket,
 		user as _user,
 		mobile,
 		currentChatPage,
 		temporaryChatEnabled
 	} from '$lib/stores';
-	import { tick, getContext, onMount, createEventDispatcher } from 'svelte';
+	import { tick, getContext, onMount, onDestroy, createEventDispatcher } from 'svelte';
 	const dispatch = createEventDispatcher();
 
 	import { toast } from 'svelte-sonner';
@@ -59,6 +61,32 @@
 
 	export let messagesCount: number | null = 20;
 	let messagesLoading = false;
+
+	let symposiumStatus = null;
+	let symposiumModel = null;
+
+	$: symposiumModelName = $models.find((m) => m.id === symposiumModel)?.name || symposiumModel;
+
+	const onSymposiumStatus = (data) => {
+		if (data.chat_id === chatId) {
+			if (data.status) {
+				symposiumStatus = data.status;
+				symposiumModel = data.model;
+				if (autoScroll) setTimeout(() => scrollToBottom(), 0);
+			} else {
+				symposiumStatus = null;
+				symposiumModel = null;
+			}
+		}
+	};
+
+	onMount(() => {
+		$socket?.on('symposium:status', onSymposiumStatus);
+	});
+
+	onDestroy(() => {
+		$socket?.off('symposium:status', onSymposiumStatus);
+	});
 
 	const loadMoreMessages = async () => {
 		// scroll slightly down to disable continuous loading
@@ -452,6 +480,28 @@
 								{topPadding}
 							/>
 						{/each}
+
+						{#if symposiumStatus}
+							<li class="flex flex-col justify-between px-5 mb-3 w-full max-w-5xl mx-auto">
+								<div class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400">
+									<div class="flex space-x-1">
+										<div
+											class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+											style="animation-delay: 0s"
+										></div>
+										<div
+											class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+											style="animation-delay: 0.2s"
+										></div>
+										<div
+											class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+											style="animation-delay: 0.4s"
+										></div>
+									</div>
+									<div>{symposiumModelName} is thinking...</div>
+								</div>
+							</li>
+						{/if}
 					</ul>
 				</section>
 				<div class="pb-18" />
