@@ -524,6 +524,7 @@ from open_webui.tasks import (
 )  # Import from tasks.py
 
 from open_webui.utils.redis import get_sentinels_from_env
+from open_webui.utils.symposium import start_symposium_loop
 
 
 from open_webui.constants import ERROR_MESSAGES
@@ -626,6 +627,27 @@ async def lifespan(app: FastAPI):
             ),
             None,
         )
+
+    # Startup Symposiums
+    try:
+        with Session() as db:
+            # Using raw SQL to avoid importing Chat model directly if circular import issues arise,
+            # but we imported Chats already.
+            # We need to find all chats with mode='symposium'
+            # Chats.get_all_symposium_chats() - assume we might need to implement this or use db query directly
+
+            # Since we can't easily extend ChatsTable here without modifying it first, let's use sqlalchemy query
+            from open_webui.models.chats import Chat
+            symposium_chats = db.query(Chat).filter(Chat.mode == 'symposium').all()
+
+            for chat in symposium_chats:
+                # Check if active in config
+                config = chat.config or {}
+                if config.get("active", True): # Default to True if mode is symposium
+                    asyncio.create_task(start_symposium_loop(chat.id))
+                    log.info(f"Restarted symposium loop for chat {chat.id}")
+    except Exception as e:
+        log.error(f"Error restarting symposiums: {e}")
 
     yield
 

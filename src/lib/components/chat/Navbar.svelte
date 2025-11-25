@@ -50,6 +50,7 @@
 	export let history;
 	export let selectedModels;
 	export let showModelSelector = true;
+    export let symposiumMode = false;
 
 	export let onSaveTempChat: () => {};
 	export let archiveChatHandler: (id: string) => void;
@@ -115,6 +116,26 @@
 						<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
 					{/if}
 				</div>
+
+                {#if !chat?.id && !shareEnabled}
+                    <div class="self-center flex-none text-gray-600 dark:text-gray-400 ml-1">
+                        <Tooltip content={$i18n.t('Symposium Mode')}>
+                            <button
+                                class="flex cursor-pointer px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition {symposiumMode ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-600 dark:text-yellow-300' : ''}"
+                                on:click={() => {
+                                    symposiumMode = !symposiumMode;
+                                    if (symposiumMode) {
+                                        toast.info($i18n.t('Symposium Mode enabled. Selected models will converse autonomously.'));
+                                    }
+                                }}
+                            >
+                                <div class="text-xs font-medium">
+                                    {$i18n.t('Symposium')}
+                                </div>
+                            </button>
+                        </Tooltip>
+                    </div>
+                {/if}
 
 				<div class="self-start flex flex-none items-center text-gray-600 dark:text-gray-400">
 					<!-- <div class="md:hidden flex self-center w-[1px] h-5 mx-2 bg-gray-300 dark:bg-stone-700" /> -->
