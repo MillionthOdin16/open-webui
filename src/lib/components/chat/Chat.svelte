@@ -89,6 +89,7 @@
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
 	import ChatControls from './ChatControls.svelte';
+	import SymposiumSidebar from './SymposiumSidebar.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Placeholder from './Placeholder.svelte';
 	import NotificationToast from '../NotificationToast.svelte';
@@ -395,6 +396,13 @@
 					await chats.set(await getChatList(localStorage.token, $currentChatPage));
 				} else if (type === 'chat:tags') {
 					chat = await getChatById(localStorage.token, $chatId);
+					if (chat) {
+						history =
+							(chat.chat?.history ?? undefined) !== undefined
+								? chat.chat.history
+								: convertMessagesToHistory(chat.chat.messages);
+						setTimeout(() => scrollToBottom(), 0);
+					}
 					allTags.set(await getAllTags(localStorage.token));
 				} else if (type === 'source' || type === 'citation') {
 					if (data?.type === 'code_execution') {
@@ -2620,6 +2628,13 @@
 					{showMessage}
 					{eventTarget}
 				/>
+
+				{#if chat && chat.mode === 'symposium'}
+					<PaneResizer class="relative flex w-2 items-center justify-center bg-background group" />
+					<Pane defaultSize={20} minSize={20} maxSize={30} class="h-full">
+						<SymposiumSidebar {chat} />
+					</Pane>
+				{/if}
 			</PaneGroup>
 		</div>
 	{:else if loading}
