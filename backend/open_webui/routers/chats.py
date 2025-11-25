@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
+from open_webui.utils.symposium import start_symposium_loop, stop_symposium_loop
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -134,6 +135,8 @@ async def get_user_chat_list_by_user_id(
 async def create_new_chat(form_data: ChatForm, user=Depends(get_verified_user)):
     try:
         chat = Chats.insert_new_chat(user.id, form_data)
+        if chat.mode == "symposium":
+            await start_symposium_loop(chat.id)
         return ChatResponse(**chat.model_dump())
     except Exception as e:
         log.exception(e)
@@ -449,7 +452,25 @@ async def update_chat_by_id(
     chat = Chats.get_chat_by_id_and_user_id(id, user.id)
     if chat:
         updated_chat = {**chat.chat, **form_data.chat}
-        chat = Chats.update_chat_by_id(id, updated_chat)
+
+        # Merge extra fields for the update dict
+        update_data = updated_chat
+        # We need to construct a dict that Chats.update_chat_by_id understands.
+        # It takes the 'chat' dict primarily, but also checks for 'mode' and 'config' keys in that dict.
+        # This is a bit of a hack in the model method or here, but let's follow the model's expectation:
+        # Chats.update_chat_by_id: "if 'mode' in chat: chat_item.mode = chat['mode']"
+
+        if form_data.mode:
+            update_data["mode"] = form_data.mode
+        if form_data.config:
+            update_data["config"] = form_data.config
+
+        chat = Chats.update_chat_by_id(id, update_data)
+
+        # Handle symposium loop state changes if config active flag changes or mode is set
+        if chat.mode == "symposium":
+            await start_symposium_loop(chat.id)
+
         return ChatResponse(**chat.model_dump())
     else:
         raise HTTPException(
@@ -566,6 +587,8 @@ async def send_chat_message_event_by_id(
 
 @router.delete("/{id}", response_model=bool)
 async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified_user)):
+    await stop_symposium_loop(id)
+
     if user.role == "admin":
         chat = Chats.get_chat_by_id(id)
         for tag in chat.meta.get("tags", []):

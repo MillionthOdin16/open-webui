@@ -41,6 +41,9 @@ class Chat(Base):
     meta = Column(JSON, server_default="{}")
     folder_id = Column(Text, nullable=True)
 
+    mode = Column(Text, default="standard")
+    config = Column(JSON, server_default="{}")
+
     __table_args__ = (
         # Performance indexes for common queries
         # WHERE folder_id = ...
@@ -74,6 +77,9 @@ class ChatModel(BaseModel):
     meta: dict = {}
     folder_id: Optional[str] = None
 
+    mode: Optional[str] = "standard"
+    config: Optional[dict] = {}
+
 
 ####################
 # Forms
@@ -83,6 +89,8 @@ class ChatModel(BaseModel):
 class ChatForm(BaseModel):
     chat: dict
     folder_id: Optional[str] = None
+    mode: Optional[str] = "standard"
+    config: Optional[dict] = {}
 
 
 class ChatImportForm(ChatForm):
@@ -117,6 +125,8 @@ class ChatResponse(BaseModel):
     pinned: Optional[bool] = False
     meta: dict = {}
     folder_id: Optional[str] = None
+    mode: Optional[str] = "standard"
+    config: Optional[dict] = {}
 
 
 class ChatTitleIdResponse(BaseModel):
@@ -178,6 +188,8 @@ class ChatTable:
                     ),
                     "chat": self._clean_null_bytes(form_data.chat),
                     "folder_id": form_data.folder_id,
+                    "mode": form_data.mode,
+                    "config": self._clean_null_bytes(form_data.config),
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
                 }
@@ -204,6 +216,8 @@ class ChatTable:
                 "meta": form_data.meta,
                 "pinned": form_data.pinned,
                 "folder_id": form_data.folder_id,
+                "mode": form_data.mode,
+                "config": form_data.config,
                 "created_at": (
                     form_data.created_at if form_data.created_at else int(time.time())
                 ),
@@ -238,6 +252,13 @@ class ChatTable:
                     if "title" in chat
                     else "New Chat"
                 )
+
+                # Check for mode/config updates
+                if "mode" in chat:
+                    chat_item.mode = chat["mode"]
+
+                if "config" in chat:
+                    chat_item.config = self._clean_null_bytes(chat["config"])
 
                 chat_item.updated_at = int(time.time())
 

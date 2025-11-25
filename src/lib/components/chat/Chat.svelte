@@ -96,6 +96,7 @@
 	import Tooltip from '../common/Tooltip.svelte';
 	import Sidebar from '../icons/Sidebar.svelte';
 	import Image from '../common/Image.svelte';
+    import SymposiumSidebar from './SymposiumSidebar.svelte';
 
 	export let chatIdProp = '';
 
@@ -152,6 +153,8 @@
 	};
 
 	let taskIds = null;
+
+    let symposiumMode = false;
 
 	// Chat Input
 	let prompt = '';
@@ -1105,6 +1108,8 @@
 
 				params = chatContent?.params ?? {};
 				chatFiles = chatContent?.files ?? [];
+
+                symposiumMode = (chat.mode === 'symposium');
 
 				autoScroll = true;
 				await tick();
@@ -2243,9 +2248,7 @@
 		let _chatId = $chatId;
 
 		if (!$temporaryChatEnabled) {
-			chat = await createNewChat(
-				localStorage.token,
-				{
+            const chatData = {
 					id: _chatId,
 					title: $i18n.t('New Chat'),
 					models: selectedModels,
@@ -2255,7 +2258,19 @@
 					messages: createMessagesList(history, history.currentId),
 					tags: [],
 					timestamp: Date.now()
-				},
+				};
+
+            if (symposiumMode) {
+                chatData['mode'] = 'symposium';
+                chatData['config'] = {
+                    models: selectedModels,
+                    active: true
+                };
+            }
+
+			chat = await createNewChat(
+				localStorage.token,
+				chatData,
 				$selectedFolder?.id
 			);
 
@@ -2403,6 +2418,12 @@
 			{/if}
 
 			<PaneGroup direction="horizontal" class="w-full h-full">
+                {#if symposiumMode}
+                    <Pane defaultSize={20} minSize={15} maxSize={30} class="h-full hidden md:block">
+                        <SymposiumSidebar {chat} {selectedModels} />
+                    </Pane>
+                    <PaneResizer class="relative flex w-2 items-center justify-center bg-gray-50 dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 z-20" />
+                {/if}
 				<Pane defaultSize={50} minSize={30} class="h-full flex relative max-w-full flex-col">
 					<Navbar
 						bind:this={navbarElement}
@@ -2422,6 +2443,7 @@
 						bind:selectedModels
 						shareEnabled={!!history.currentId}
 						{initNewChat}
+                        bind:symposiumMode
 						archiveChatHandler={() => {}}
 						{moveChatHandler}
 						onSaveTempChat={async () => {
