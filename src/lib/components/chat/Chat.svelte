@@ -21,6 +21,7 @@
 		type Model,
 		models,
 		tags as allTags,
+		symposiumPodcastMode,
 		settings,
 		showSidebar,
 		WEBUI_NAME,
@@ -89,6 +90,7 @@
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
 	import ChatControls from './ChatControls.svelte';
+	import SymposiumSidebar from './SymposiumSidebar.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Placeholder from './Placeholder.svelte';
 	import NotificationToast from '../NotificationToast.svelte';
@@ -395,6 +397,13 @@
 					await chats.set(await getChatList(localStorage.token, $currentChatPage));
 				} else if (type === 'chat:tags') {
 					chat = await getChatById(localStorage.token, $chatId);
+					if (chat) {
+						history =
+							(chat.chat?.history ?? undefined) !== undefined
+								? chat.chat.history
+								: convertMessagesToHistory(chat.chat.messages);
+						setTimeout(() => scrollToBottom(), 0);
+					}
 					allTags.set(await getAllTags(localStorage.token));
 				} else if (type === 'source' || type === 'citation') {
 					if (data?.type === 'code_execution') {
@@ -476,6 +485,32 @@
 		}
 	};
 
+	const onSymposiumMessage = async (data) => {
+		if (data.chat_id === $chatId) {
+			const message = data.message;
+			// Add to history
+			history.messages[message.id] = message;
+			// If it has a parent, update parent children
+			if (message.parentId && history.messages[message.parentId]) {
+				history.messages[message.parentId].childrenIds = [
+					...history.messages[message.parentId].childrenIds,
+					message.id
+				];
+			}
+			// Update currentId
+			history.currentId = message.id;
+
+			await tick();
+			window.setTimeout(() => scrollToBottom(), 0);
+
+			if ($symposiumPodcastMode) {
+				await tick();
+				const speakButton = document.getElementById(`speak-button-${message.id}`);
+				speakButton?.click();
+			}
+		}
+	};
+
 	const onMessageHandler = async (event: {
 		origin: string;
 		data: { type: string; text: string };
@@ -549,6 +584,7 @@
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
 		$socket?.on('events', chatEventHandler);
+		$socket?.on('symposium:message', onSymposiumMessage);
 
 		audioQueue.set(new AudioQueue(document.getElementById('audioElement')));
 
@@ -640,6 +676,7 @@
 			chatIdUnsubscriber?.();
 			window.removeEventListener('message', onMessageHandler);
 			$socket?.off('events', chatEventHandler);
+			$socket?.off('symposium:message', onSymposiumMessage);
 			$audioQueue?.destroy();
 		} catch (e) {
 			console.error(e);
@@ -1548,6 +1585,25 @@
 
 	const submitPrompt = async (userPrompt, { _raw = false } = {}) => {
 		console.log('submitPrompt', userPrompt, $chatId);
+
+		if (chat?.mode === 'symposium' && userPrompt.trim().startsWith('/echo ')) {
+			const content = userPrompt.trim().slice(6);
+			if (content) {
+				await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/splice`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						authorization: `Bearer ${localStorage.token}`
+					},
+					body: JSON.stringify({ content })
+				});
+
+				prompt = '';
+				messageInput?.setText('');
+				files = [];
+				return;
+			}
+		}
 
 		const _selectedModels = selectedModels.map((modelId) =>
 			$models.map((m) => m.id).includes(modelId) ? modelId : ''
@@ -2620,6 +2676,13 @@
 					{showMessage}
 					{eventTarget}
 				/>
+
+				{#if chat && chat.mode === 'symposium'}
+					<PaneResizer class="relative flex w-2 items-center justify-center bg-background group" />
+					<Pane defaultSize={20} minSize={20} maxSize={30} class="h-full">
+						<SymposiumSidebar {chat} />
+					</Pane>
+				{/if}
 			</PaneGroup>
 		</div>
 	{:else if loading}

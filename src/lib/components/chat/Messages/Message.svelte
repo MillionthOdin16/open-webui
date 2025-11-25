@@ -49,7 +49,9 @@
 	role="listitem"
 	class="flex flex-col justify-between px-5 mb-3 w-full {($settings?.widescreenMode ?? null)
 		? 'max-w-full'
-		: 'max-w-5xl'} mx-auto rounded-lg group"
+		: 'max-w-5xl'} mx-auto rounded-lg group {history.messages[messageId]?.type === 'echo'
+		? 'border-l-4 border-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 py-2'
+		: ''}"
 >
 	{#if history.messages[messageId]}
 		{#if history.messages[messageId].role === 'user'}
