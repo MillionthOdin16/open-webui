@@ -2,8 +2,9 @@
 	import { toast } from 'svelte-sonner';
 
 	import { createEventDispatcher, onMount, getContext } from 'svelte';
-	import { config, models } from '$lib/stores';
+	import { config, models, tags as _tags } from '$lib/stores';
 	import Tags from '$lib/components/common/Tags.svelte';
+	import XMark from '$lib/components/icons/XMark.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -123,22 +124,13 @@
 				show = false;
 			}}
 		>
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				fill="none"
-				viewBox="0 0 24 24"
-				stroke-width="1.5"
-				stroke="currentColor"
-				class="size-4"
-			>
-				<path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
-			</svg>
+			<XMark className={'size-4'} />
 		</button>
 	</div>
 
 	<div class="w-full flex justify-center">
-		<div class=" relative w-fit">
-			<div class="mt-1.5 w-fit flex gap-1 pb-5">
+		<div class=" relative w-fit overflow-x-auto scrollbar-none">
+			<div class="mt-1.5 w-fit flex gap-1 pb-2">
 				<!-- 1-10 scale -->
 				{#each Array.from({ length: 10 }).map((_, i) => i + 1) as rating}
 					<button
@@ -156,7 +148,7 @@
 				{/each}
 			</div>
 
-			<div class="absolute bottom-0 left-0 right-0 flex justify-between text-xs">
+			<div class="sticky top-0 bottom-0 left-0 right-0 flex justify-between text-xs">
 				<div>
 					1 - {$i18n.t('Awful')}
 				</div>
@@ -233,6 +225,7 @@
 		<div class="flex items-end group">
 			<Tags
 				{tags}
+				suggestionTags={$_tags ?? []}
 				on:delete={(e) => {
 					tags = tags.filter(
 						(tag) =>

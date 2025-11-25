@@ -7,6 +7,8 @@ from open_webui.models.feedbacks import (
     FeedbackModel,
     FeedbackResponse,
     FeedbackForm,
+    FeedbackUserResponse,
+    FeedbackListResponse,
     Feedbacks,
 )
 
@@ -56,19 +58,10 @@ async def update_config(
     }
 
 
-class FeedbackUserResponse(FeedbackResponse):
-    user: Optional[UserModel] = None
-
-
-@router.get("/feedbacks/all", response_model=list[FeedbackUserResponse])
+@router.get("/feedbacks/all", response_model=list[FeedbackResponse])
 async def get_all_feedbacks(user=Depends(get_admin_user)):
     feedbacks = Feedbacks.get_all_feedbacks()
-    return [
-        FeedbackUserResponse(
-            **feedback.model_dump(), user=Users.get_user_by_id(feedback.user_id)
-        )
-        for feedback in feedbacks
-    ]
+    return feedbacks
 
 
 @router.delete("/feedbacks/all")
@@ -80,12 +73,7 @@ async def delete_all_feedbacks(user=Depends(get_admin_user)):
 @router.get("/feedbacks/all/export", response_model=list[FeedbackModel])
 async def get_all_feedbacks(user=Depends(get_admin_user)):
     feedbacks = Feedbacks.get_all_feedbacks()
-    return [
-        FeedbackModel(
-            **feedback.model_dump(), user=Users.get_user_by_id(feedback.user_id)
-        )
-        for feedback in feedbacks
-    ]
+    return feedbacks
 
 
 @router.get("/feedbacks/user", response_model=list[FeedbackUserResponse])
@@ -98,6 +86,31 @@ async def get_feedbacks(user=Depends(get_verified_user)):
 async def delete_feedbacks(user=Depends(get_verified_user)):
     success = Feedbacks.delete_feedbacks_by_user_id(user.id)
     return success
+
+
+PAGE_ITEM_COUNT = 30
+
+
+@router.get("/feedbacks/list", response_model=FeedbackListResponse)
+async def get_feedbacks(
+    order_by: Optional[str] = None,
+    direction: Optional[str] = None,
+    page: Optional[int] = 1,
+    user=Depends(get_admin_user),
+):
+    limit = PAGE_ITEM_COUNT
+
+    page = max(1, page)
+    skip = (page - 1) * limit
+
+    filter = {}
+    if order_by:
+        filter["order_by"] = order_by
+    if direction:
+        filter["direction"] = direction
+
+    result = Feedbacks.get_feedback_items(filter=filter, skip=skip, limit=limit)
+    return result
 
 
 @router.post("/feedback", response_model=FeedbackModel)
@@ -118,7 +131,10 @@ async def create_feedback(
 
 @router.get("/feedback/{id}", response_model=FeedbackModel)
 async def get_feedback_by_id(id: str, user=Depends(get_verified_user)):
-    feedback = Feedbacks.get_feedback_by_id_and_user_id(id=id, user_id=user.id)
+    if user.role == "admin":
+        feedback = Feedbacks.get_feedback_by_id(id=id)
+    else:
+        feedback = Feedbacks.get_feedback_by_id_and_user_id(id=id, user_id=user.id)
 
     if not feedback:
         raise HTTPException(
@@ -132,9 +148,12 @@ async def get_feedback_by_id(id: str, user=Depends(get_verified_user)):
 async def update_feedback_by_id(
     id: str, form_data: FeedbackForm, user=Depends(get_verified_user)
 ):
-    feedback = Feedbacks.update_feedback_by_id_and_user_id(
-        id=id, user_id=user.id, form_data=form_data
-    )
+    if user.role == "admin":
+        feedback = Feedbacks.update_feedback_by_id(id=id, form_data=form_data)
+    else:
+        feedback = Feedbacks.update_feedback_by_id_and_user_id(
+            id=id, user_id=user.id, form_data=form_data
+        )
 
     if not feedback:
         raise HTTPException(
