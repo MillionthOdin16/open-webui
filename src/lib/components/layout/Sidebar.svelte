@@ -55,12 +55,14 @@
 	import ChannelModal from './Sidebar/ChannelModal.svelte';
 	import ChannelItem from './Sidebar/ChannelItem.svelte';
 	import PencilSquare from '../icons/PencilSquare.svelte';
+	import Sparkles from '../icons/Sparkles.svelte';
 	import Search from '../icons/Search.svelte';
 	import SearchModal from './SearchModal.svelte';
 	import FolderModal from './Sidebar/Folders/FolderModal.svelte';
 	import Sidebar from '../icons/Sidebar.svelte';
 	import PinnedModelList from './Sidebar/PinnedModelList.svelte';
 	import Note from '../icons/Note.svelte';
+	import NewSymposiumModal from '../chat/NewSymposiumModal.svelte';
 	import { slide } from 'svelte/transition';
 	import HotkeyHint from '../common/HotkeyHint.svelte';
 
@@ -79,6 +81,7 @@
 	let allChatsLoaded = false;
 
 	let showCreateFolderModal = false;
+	let showNewSymposiumModal = false;
 
 	let folders = {};
 	let folderRegistry = {};
@@ -509,6 +512,8 @@
 	}}
 />
 
+<NewSymposiumModal bind:show={showNewSymposiumModal} />
+
 <!-- svelte-ignore a11y-no-static-element-interactions -->
 
 {#if $showSidebar}
@@ -812,6 +817,27 @@
 
 							<HotkeyHint name="newChat" className=" group-hover:visible invisible" />
 						</a>
+					</div>
+
+					<div class="px-1.5 flex justify-center text-gray-800 dark:text-gray-200">
+						<button
+							class="group grow flex items-center space-x-3 rounded-2xl px-2.5 py-2 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
+							on:click={() => {
+								showNewSymposiumModal = true;
+							}}
+							draggable="false"
+							aria-label={$i18n.t('New Symposium')}
+						>
+							<div class="self-center">
+								<Sparkles className=" size-4.5" strokeWidth="2" />
+							</div>
+
+							<div class="flex flex-1 self-center translate-y-[0.5px]">
+								<div class=" self-center text-sm font-primary">
+									{$i18n.t('New Symposium')}
+								</div>
+							</div>
+						</button>
 					</div>
 
 					<div class="px-1.5 flex justify-center text-gray-800 dark:text-gray-200">

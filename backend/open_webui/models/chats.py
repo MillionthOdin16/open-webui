@@ -41,6 +41,9 @@ class Chat(Base):
     meta = Column(JSON, server_default="{}")
     folder_id = Column(Text, nullable=True)
 
+    mode = Column(Text, nullable=True)
+    config = Column(JSON, nullable=True)
+
     __table_args__ = (
         # Performance indexes for common queries
         # WHERE folder_id = ...
@@ -74,6 +77,9 @@ class ChatModel(BaseModel):
     meta: dict = {}
     folder_id: Optional[str] = None
 
+    mode: Optional[str] = None
+    config: Optional[dict] = None
+
 
 ####################
 # Forms
@@ -83,6 +89,8 @@ class ChatModel(BaseModel):
 class ChatForm(BaseModel):
     chat: dict
     folder_id: Optional[str] = None
+    mode: Optional[str] = None
+    config: Optional[dict] = None
 
 
 class ChatImportForm(ChatForm):
@@ -117,6 +125,8 @@ class ChatResponse(BaseModel):
     pinned: Optional[bool] = False
     meta: dict = {}
     folder_id: Optional[str] = None
+    mode: Optional[str] = None
+    config: Optional[dict] = None
 
 
 class ChatTitleIdResponse(BaseModel):
@@ -178,6 +188,8 @@ class ChatTable:
                     ),
                     "chat": self._clean_null_bytes(form_data.chat),
                     "folder_id": form_data.folder_id,
+                    "mode": form_data.mode,
+                    "config": form_data.config,
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
                 }
@@ -244,6 +256,18 @@ class ChatTable:
                 db.commit()
                 db.refresh(chat_item)
 
+                return ChatModel.model_validate(chat_item)
+        except Exception:
+            return None
+
+    def update_chat_config_by_id(self, id: str, config: dict) -> Optional[ChatModel]:
+        try:
+            with get_db() as db:
+                chat_item = db.get(Chat, id)
+                chat_item.config = config
+                chat_item.updated_at = int(time.time())
+                db.commit()
+                db.refresh(chat_item)
                 return ChatModel.model_validate(chat_item)
         except Exception:
             return None

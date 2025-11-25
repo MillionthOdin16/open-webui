@@ -91,6 +91,8 @@ export const artifactContents = writable(null);
 
 export const embed = writable(null);
 
+export const symposiumPodcastMode = writable(false);
+
 export const temporaryChatEnabled = writable(false);
 export const scrollPaginationEnabled = writable(false);
 export const currentChatPage = writable(1);

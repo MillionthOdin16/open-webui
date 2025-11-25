@@ -4,6 +4,7 @@ from typing import Optional
 
 
 from open_webui.socket.main import get_event_emitter
+from open_webui.core.symposium import symposium_manager
 from open_webui.models.chats import (
     ChatForm,
     ChatImportForm,
@@ -134,6 +135,8 @@ async def get_user_chat_list_by_user_id(
 async def create_new_chat(form_data: ChatForm, user=Depends(get_verified_user)):
     try:
         chat = Chats.insert_new_chat(user.id, form_data)
+        if form_data.mode == "symposium":
+            await symposium_manager.start_symposium(chat.id)
         return ChatResponse(**chat.model_dump())
     except Exception as e:
         log.exception(e)
@@ -456,6 +459,99 @@ async def update_chat_by_id(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
+
+
+############################
+# SpliceChatMessage
+############################
+class SpliceForm(BaseModel):
+    content: str
+
+
+@router.post("/{id}/splice", response_model=bool)
+async def splice_chat_message(
+    id: str, form_data: SpliceForm, user=Depends(get_verified_user)
+):
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    return await symposium_manager.splice_message(id, form_data.content, user.id)
+
+
+class SymposiumConfigForm(BaseModel):
+    paused: Optional[bool] = None
+    interval: Optional[int] = None
+    prompt: Optional[str] = None
+    models: Optional[list[str]] = None
+
+
+class TriggerForm(BaseModel):
+    model_id: str
+
+
+class WhisperForm(BaseModel):
+    model_id: str
+    content: str
+
+
+@router.put("/{id}/symposium/config", response_model=Optional[ChatResponse])
+async def update_symposium_config(
+    id: str, form_data: SymposiumConfigForm, user=Depends(get_verified_user)
+):
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    config = chat.config or {}
+    if form_data.paused is not None:
+        config["paused"] = form_data.paused
+    if form_data.interval is not None:
+        config["autonomous_interval"] = form_data.interval
+    if form_data.prompt is not None:
+        config["prompt"] = form_data.prompt
+    if form_data.models is not None:
+        config["models"] = form_data.models
+
+    chat = Chats.update_chat_config_by_id(id, config)
+    await symposium_manager.notify_update(id)
+    return ChatResponse(**chat.model_dump())
+
+
+@router.post("/{id}/symposium/whisper", response_model=bool)
+async def whisper_symposium_model(
+    id: str, form_data: WhisperForm, user=Depends(get_verified_user)
+):
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    await symposium_manager.add_whisper(id, form_data.model_id, form_data.content)
+    return True
+
+
+@router.post("/{id}/symposium/trigger", response_model=bool)
+async def trigger_symposium_model(
+    id: str, form_data: TriggerForm, user=Depends(get_verified_user)
+):
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    await symposium_manager.set_next_speaker(id, form_data.model_id)
+    return True
 
 
 ############################
