@@ -480,6 +480,7 @@ from open_webui.env import (
     AIOHTTP_CLIENT_SESSION_SSL,
     ENABLE_STAR_SESSIONS_MIDDLEWARE,
 )
+from open_webui.internal.db import get_db
 
 
 from open_webui.utils.models import (
