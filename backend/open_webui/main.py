@@ -104,10 +104,11 @@ from open_webui.routers.retrieval import (
 
 from open_webui.internal.db import Session, engine
 
+from open_webui.core.symposium import symposium_manager
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 from open_webui.models.users import UserModel, Users
-from open_webui.models.chats import Chats
+from open_webui.models.chats import Chats, Chat
 
 from open_webui.config import (
     # Ollama
@@ -605,6 +606,17 @@ async def lifespan(app: FastAPI):
         limiter.total_tokens = THREAD_POOL_SIZE
 
     asyncio.create_task(periodic_usage_pool_cleanup())
+
+    symposium_manager.init_app(app)
+    # Restart active symposiums
+    with get_db() as db:
+        active_symposiums = (
+            db.query(Chat)
+            .filter(Chat.mode == "symposium", Chat.archived == False)
+            .all()
+        )
+        for chat in active_symposiums:
+            await symposium_manager.start_symposium(chat.id)
 
     if app.state.config.ENABLE_BASE_MODELS_CACHE:
         await get_all_models(
