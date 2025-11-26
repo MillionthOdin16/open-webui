@@ -3,8 +3,6 @@
 	import {
 		chats,
 		config,
-		chats,
-		config,
 		models,
 		settings,
 		socket,
