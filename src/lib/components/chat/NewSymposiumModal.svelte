@@ -63,7 +63,8 @@
 				title: title || 'New Symposium',
 				mode: 'symposium',
 				config: chatConfig,
-				models: selectedModels.filter((m) => m) // Also set models for standard handling
+				models: selectedModels.filter((m) => m), // Also set models for standard handling
+				history: { messages: {}, currentId: null }
 			},
 			null
 		).catch((error) => {
