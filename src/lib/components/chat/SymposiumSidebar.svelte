@@ -30,16 +30,24 @@
 	};
 
 	const updateParticipants = async (newModels) => {
-		const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/symposium/config`, {
-			method: 'PUT',
-			headers: {
-				'Content-Type': 'application/json',
-				authorization: `Bearer ${localStorage.token}`
-			},
-			body: JSON.stringify({ models: newModels })
-		});
-		if (res.ok) {
-			chat.config.models = newModels;
+		try {
+			const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/symposium/config`, {
+				method: 'PUT',
+				headers: {
+					'Content-Type': 'application/json',
+					authorization: `Bearer ${localStorage.token}`
+				},
+				body: JSON.stringify({ models: newModels })
+			});
+			if (res.ok) {
+				chat.config.models = newModels;
+				toast.success('Participants updated');
+			} else {
+				toast.error('Failed to update participants');
+			}
+		} catch (error) {
+			console.error('Error updating participants:', error);
+			toast.error('Network error updating participants');
 		}
 	};
 
@@ -55,14 +63,24 @@
 	};
 
 	const triggerModel = async (modelId) => {
-		await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/symposium/trigger`, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				authorization: `Bearer ${localStorage.token}`
-			},
-			body: JSON.stringify({ model_id: modelId })
-		});
+		try {
+			const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/symposium/trigger`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					authorization: `Bearer ${localStorage.token}`
+				},
+				body: JSON.stringify({ model_id: modelId })
+			});
+			if (res.ok) {
+				toast.success('Model triggered');
+			} else {
+				toast.error('Failed to trigger model');
+			}
+		} catch (error) {
+			console.error('Error triggering model:', error);
+			toast.error('Network error');
+		}
 	};
 
 	const sendWhisper = async () => {
@@ -142,9 +160,7 @@
 						</div>
 					</div>
 
-					<div
-						class="flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity"
-					>
+					<div class="flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
 						<Tooltip content={$i18n.t('Whisper')}>
 							<button
 								class="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-500"

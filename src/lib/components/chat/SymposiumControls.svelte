@@ -3,6 +3,11 @@
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { toast } from 'svelte-sonner';
 	import { symposiumPodcastMode } from '$lib/stores';
+	import {
+		exportSymposiumConfig,
+		downloadSymposiumConfig,
+		importSymposiumConfig
+	} from '$lib/utils/symposium';
 
 	const i18n = getContext('i18n');
 	export let chat;
@@ -10,6 +15,7 @@
 	let paused = false;
 	let interval = 30;
 	let prompt = '';
+	let fileInput: HTMLInputElement;
 
 	$: if (chat && chat.config) {
 		paused = chat.config.paused ?? false;
@@ -39,6 +45,44 @@
 		if (!res.ok) {
 			toast.error('Failed to update symposium config');
 		}
+	};
+
+	const handleExport = () => {
+		const config = exportSymposiumConfig(chat);
+		downloadSymposiumConfig(config);
+		toast.success('Configuration exported successfully');
+	};
+
+	const handleImportClick = () => {
+		fileInput.click();
+	};
+
+	const handleImportFile = async (event: Event) => {
+		const target = event.target as HTMLInputElement;
+		const file = target.files?.[0];
+		if (!file) return;
+
+		try {
+			const config = await importSymposiumConfig(file);
+
+			// Update local state
+			prompt = config.config.prompt;
+			interval = config.config.autonomous_interval;
+
+			// Update chat config
+			chat.config.prompt = config.config.prompt;
+			chat.config.autonomous_interval = config.config.autonomous_interval;
+			chat.config.context_limit = config.config.context_limit;
+
+			// Save to backend
+			await updateConfig();
+			toast.success('Configuration imported successfully');
+		} catch (error) {
+			toast.error(error.message || 'Failed to import configuration');
+		}
+
+		// Reset file input
+		target.value = '';
 	};
 </script>
 
@@ -95,4 +139,47 @@
 			{$symposiumPodcastMode ? $i18n.t('ON') : $i18n.t('OFF')}
 		</button>
 	</div>
+
+	<div
+		class="flex items-center justify-between mt-3 pt-3 border-t border-gray-200 dark:border-gray-700"
+	>
+		<div class="text-xs text-gray-500 dark:text-gray-400">{$i18n.t('Configuration')}</div>
+		<div class="flex space-x-2">
+			<button
+				class="px-2 py-1 text-xs font-medium rounded-lg transition-colors bg-gray-200 text-gray-800 dark:bg-gray-800 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700"
+				on:click={handleExport}
+				title="Export configuration"
+			>
+				<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="2"
+						d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+					/>
+				</svg>
+			</button>
+			<button
+				class="px-2 py-1 text-xs font-medium rounded-lg transition-colors bg-gray-200 text-gray-800 dark:bg-gray-800 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700"
+				on:click={handleImportClick}
+				title="Import configuration"
+			>
+				<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="2"
+						d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
+					/>
+				</svg>
+			</button>
+		</div>
+	</div>
+	<input
+		type="file"
+		accept=".json"
+		class="hidden"
+		bind:this={fileInput}
+		on:change={handleImportFile}
+	/>
 </div>
