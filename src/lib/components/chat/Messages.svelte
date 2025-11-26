@@ -11,6 +11,7 @@
 		currentChatPage,
 		temporaryChatEnabled
 	} from '$lib/stores';
+	import SymposiumStatusBar from './SymposiumStatusBar.svelte';
 	import { tick, getContext, onMount, onDestroy, createEventDispatcher } from 'svelte';
 	const dispatch = createEventDispatcher();
 
@@ -64,6 +65,8 @@
 
 	let symposiumStatus = null;
 	let symposiumModel = null;
+	let symposiumPaused = false;
+	let symposiumInterval = 30;
 
 	$: symposiumModelName = $models.find((m) => m.id === symposiumModel)?.name || symposiumModel;
 
@@ -79,6 +82,15 @@
 			}
 		}
 	};
+
+	// Update symposium config from chat
+	$: if ($chats) {
+		const currentChat = $chats.find((c) => c.id === chatId);
+		if (currentChat?.config) {
+			symposiumPaused = currentChat.config.paused || false;
+			symposiumInterval = currentChat.config.autonomous_interval || 30;
+		}
+	}
 
 	onMount(() => {
 		$socket?.on('symposium:status', onSymposiumStatus);
@@ -504,7 +516,21 @@
 						{/if}
 					</ul>
 				</section>
-				<div class="pb-18" />
+				<div class="{className} scrollbar-hidden" id="messages-container" bind:this={element}>
+					{#if topPadding}
+						<div class=" mb-2" />
+					{/if}
+
+					<!-- Symposium Status Bar -->
+					{#if symposiumStatus || symposiumModel}
+						<SymposiumStatusBar
+							status={symposiumStatus}
+							currentModel={symposiumModel}
+							paused={symposiumPaused}
+							interval={symposiumInterval}
+						/>
+					{/if}
+				</div>
 				{#if bottomPadding}
 					<div class="  pb-6" />
 				{/if}
