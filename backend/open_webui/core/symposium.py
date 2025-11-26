@@ -60,15 +60,21 @@ class SymposiumManager:
     async def stop_symposium(self, chat_id: str):
         if chat_id in self.active_symposiums:
             log.info(f"Stopping symposium for chat {chat_id}")
-            self.active_symposiums[chat_id].cancel()
+            task = self.active_symposiums[chat_id]
+            task.cancel()
             try:
-                await self.active_symposiums[chat_id]
+                await task
             except asyncio.CancelledError:
-                pass
-            del self.active_symposiums[chat_id]
+                log.debug(f"Symposium task {chat_id} cancelled successfully")
+            finally:
+                del self.active_symposiums[chat_id]
 
+        # Clean up all state
         if chat_id in self.events:
             del self.events[chat_id]
+        
+        self.overrides.pop(chat_id, None)
+        self.whispers.pop(chat_id, None)
 
     async def symposium_loop(self, chat_id: str):
         event = self.events[chat_id]
@@ -90,7 +96,8 @@ class SymposiumManager:
                             pass
                         continue
 
-                    interval = int(config.get('autonomous_interval', 30))
+                    MIN_INTERVAL = 10  # Minimum 10 seconds to prevent API spam
+                    interval = max(MIN_INTERVAL, int(config.get('autonomous_interval', 30)))
                     models = config.get('models', [])
 
                     if not models:
@@ -99,7 +106,14 @@ class SymposiumManager:
                         continue
 
                     history = chat.chat.get('history', {}).get('messages', {})
-                    sorted_messages = sorted(history.values(), key=lambda x: x.get('timestamp', 0))
+                    # Optimize sorting for large histories
+                    if len(history) > 50:
+                        recent_threshold = int(time.time()) - 3600  # Last hour
+                        recent_history = {k: v for k, v in history.items() 
+                                          if v.get('timestamp', 0) > recent_threshold}
+                        sorted_messages = sorted(recent_history.values(), key=lambda x: x.get('timestamp', 0))
+                    else:
+                        sorted_messages = sorted(history.values(), key=lambda x: x.get('timestamp', 0))
 
                     next_model_id = models[0]
                     override_model = self.overrides.pop(chat_id, None)
@@ -135,7 +149,7 @@ class SymposiumManager:
                             else:
                                 next_model_id = models[0]
 
-                    context_limit = 20 # Increased context
+                    context_limit = int(config.get('context_limit', 20))
                     recent_msgs = sorted_messages[-context_limit:]
 
                     messages_payload = []
@@ -187,79 +201,93 @@ class SymposiumManager:
                         },
                     )
 
-                    response = await generate_chat_completion(request, form_data, user)
+                    try:
+                        response = await generate_chat_completion(request, form_data, user)
 
-                    content = ""
-                    if isinstance(response, StreamingResponse):
-                        async for chunk in response.body_iterator:
-                            if isinstance(chunk, bytes):
-                                chunk = chunk.decode('utf-8', errors='ignore')
+                        content = ""
+                        if isinstance(response, StreamingResponse):
+                            async for chunk in response.body_iterator:
+                                if isinstance(chunk, bytes):
+                                    chunk = chunk.decode('utf-8', errors='ignore')
 
-                            for line in chunk.split('\n'):
-                                if line.startswith('data: '):
-                                    data_str = line[6:]
-                                    if data_str == '[DONE]':
-                                        continue
-                                    try:
-                                        data = json.loads(data_str)
-                                        if 'choices' in data:
-                                            delta = data['choices'][0].get('delta', {}).get('content', '')
-                                            content += delta
-                                        elif 'content' in data:
-                                            content += data['content']
-                                    except:
-                                        pass
-                    elif isinstance(response, JSONResponse):
-                        body = json.loads(response.body)
-                        if 'choices' in body:
-                            content = body['choices'][0]['message']['content']
-                    elif isinstance(response, dict):
-                        if 'choices' in response:
-                            content = response['choices'][0]['message']['content']
-                        elif 'content' in response:
-                            content = response['content']
+                                for line in chunk.split('\n'):
+                                    if line.startswith('data: '):
+                                        data_str = line[6:]
+                                        if data_str == '[DONE]':
+                                            continue
+                                        try:
+                                            data = json.loads(data_str)
+                                            if 'choices' in data:
+                                                delta = data['choices'][0].get('delta', {}).get('content', '')
+                                                content += delta
+                                            elif 'content' in data:
+                                                content += data['content']
+                                        except json.JSONDecodeError:
+                                            log.debug(f"Failed to parse JSON chunk: {data_str[:100]}")
+                                        except Exception as e:
+                                            log.error(f"Error parsing response chunk: {e}")
+                        elif isinstance(response, JSONResponse):
+                            body = json.loads(response.body)
+                            if 'choices' in body:
+                                content = body['choices'][0]['message']['content']
+                        elif isinstance(response, dict):
+                            if 'choices' in response:
+                                content = response['choices'][0]['message']['content']
+                            elif 'content' in response:
+                                content = response['content']
 
-                    if content:
-                        message_id = str(uuid.uuid4())
-                        message = {
-                            "id": message_id,
-                            "parentId": recent_msgs[-1]['id'] if recent_msgs else None,
-                            "childrenIds": [],
-                            "role": "assistant",
-                            "content": content,
-                            "model": next_model_id,
-                            "modelName": next_model_id,
-                            "timestamp": int(time.time())
-                        }
+                        if content:
+                            message_id = str(uuid.uuid4())
+                            message = {
+                                "id": message_id,
+                                "parentId": recent_msgs[-1]['id'] if recent_msgs else None,
+                                "childrenIds": [],
+                                "role": "assistant",
+                                "content": content,
+                                "model": next_model_id,
+                                "modelName": next_model_id,
+                                "timestamp": int(time.time())
+                            }
 
-                        await run_in_threadpool(
-                            Chats.upsert_message_to_chat_by_id_and_message_id,
-                            chat_id, message_id, message
-                        )
-
-                        if message['parentId']:
-                            parent = await run_in_threadpool(
-                                Chats.get_message_by_id_and_message_id,
-                                chat_id, message['parentId']
+                            await run_in_threadpool(
+                                Chats.upsert_message_to_chat_by_id_and_message_id,
+                                chat_id, message_id, message
                             )
-                            if parent:
-                                parent['childrenIds'] = parent.get('childrenIds', []) + [message_id]
-                                await run_in_threadpool(
-                                    Chats.upsert_message_to_chat_by_id_and_message_id,
-                                    chat_id, message['parentId'], parent
+
+                            if message['parentId']:
+                                parent = await run_in_threadpool(
+                                    Chats.get_message_by_id_and_message_id,
+                                    chat_id, message['parentId']
                                 )
+                                if parent:
+                                    parent['childrenIds'] = parent.get('childrenIds', []) + [message_id]
+                                    await run_in_threadpool(
+                                        Chats.upsert_message_to_chat_by_id_and_message_id,
+                                        chat_id, message['parentId'], parent
+                                    )
 
-                        # Emit symposium message for real-time update
-                        await sio.emit("symposium:message", {"chat_id": chat_id, "message": message})
+                            # Emit symposium message for real-time update
+                            await sio.emit("symposium:message", {"chat_id": chat_id, "message": message})
 
-                    await sio.emit(
-                        "symposium:status",
-                        {
+                        await sio.emit(
+                            "symposium:status",
+                            {
+                                "chat_id": chat_id,
+                                "model": next_model_id,
+                                "status": None,
+                            },
+                        )
+                    except Exception as e:
+                        log.error(f"Symposium {chat_id}: Model {next_model_id} failed: {e}")
+                        await sio.emit("symposium:status", {
                             "chat_id": chat_id,
                             "model": next_model_id,
-                            "status": None,
-                        },
-                    )
+                            "status": f"Error: {str(e)[:100]}",
+                            "error": True
+                        })
+                        # Continue to next iteration instead of crashing
+                        await asyncio.sleep(5)
+                        continue
 
                 except Exception as e:
                     log.error(f"Error in symposium loop for {chat_id}: {e}")
@@ -275,47 +303,52 @@ class SymposiumManager:
             log.info(f"Symposium loop cancelled for {chat_id}")
 
     async def splice_message(self, chat_id: str, content: str, user_id: str):
-        chat = await run_in_threadpool(Chats.get_chat_by_id, chat_id)
-        if not chat:
-            return False
+        try:
+            chat = await run_in_threadpool(Chats.get_chat_by_id, chat_id)
+            if not chat:
+                log.warning(f"splice_message: Chat {chat_id} not found")
+                return False
 
-        history = chat.chat.get('history', {}).get('messages', {})
-        sorted_messages = sorted(history.values(), key=lambda x: x.get('timestamp', 0))
+            history = chat.chat.get('history', {}).get('messages', {})
+            sorted_messages = sorted(history.values(), key=lambda x: x.get('timestamp', 0))
 
-        parent_id = sorted_messages[-1]['id'] if sorted_messages else None
+            parent_id = sorted_messages[-1]['id'] if sorted_messages else None
 
-        message_id = str(uuid.uuid4())
-        message = {
-            "id": message_id,
-            "parentId": parent_id,
-            "childrenIds": [],
-            "role": "system",
-            "content": f"_{content}_",
-            "model": "system_echo",
-            "modelName": "Echo",
-            "timestamp": int(time.time()),
-            "type": "echo"
-        }
+            message_id = str(uuid.uuid4())
+            message = {
+                "id": message_id,
+                "parentId": parent_id,
+                "childrenIds": [],
+                "role": "system",
+                "content": f"_{content}_",
+                "model": "system_echo",
+                "modelName": "Echo",
+                "timestamp": int(time.time()),
+                "type": "echo"
+            }
 
-        await run_in_threadpool(
-            Chats.upsert_message_to_chat_by_id_and_message_id,
-            chat_id, message_id, message
-        )
-
-        if parent_id:
-            parent = await run_in_threadpool(
-                Chats.get_message_by_id_and_message_id,
-                chat_id, parent_id
+            await run_in_threadpool(
+                Chats.upsert_message_to_chat_by_id_and_message_id,
+                chat_id, message_id, message
             )
-            if parent:
-                parent['childrenIds'] = parent.get('childrenIds', []) + [message_id]
-                await run_in_threadpool(
-                    Chats.upsert_message_to_chat_by_id_and_message_id,
-                    chat_id, parent_id, parent
-                )
 
-        # Emit symposium message for real-time update
-        await sio.emit("symposium:message", {"chat_id": chat_id, "message": message})
-        return True
+            if parent_id:
+                parent = await run_in_threadpool(
+                    Chats.get_message_by_id_and_message_id,
+                    chat_id, parent_id
+                )
+                if parent:
+                    parent['childrenIds'] = parent.get('childrenIds', []) + [message_id]
+                    await run_in_threadpool(
+                        Chats.upsert_message_to_chat_by_id_and_message_id,
+                        chat_id, parent_id, parent
+                    )
+
+            # Emit symposium message for real-time update
+            await sio.emit("symposium:message", {"chat_id": chat_id, "message": message})
+            return True
+        except Exception as e:
+            log.error(f"Error splicing message to {chat_id}: {e}")
+            return False
 
 symposium_manager = SymposiumManager()
