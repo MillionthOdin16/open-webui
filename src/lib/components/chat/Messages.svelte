@@ -447,6 +447,17 @@
 			{#key chatId}
 				<section class="w-full" aria-labelledby="chat-conversation">
 					<h2 class="sr-only" id="chat-conversation">{$i18n.t('Chat Conversation')}</h2>
+
+					<!-- Symposium Status Bar -->
+					{#if symposiumStatus || symposiumModel}
+						<SymposiumStatusBar
+							status={symposiumStatus}
+							currentModel={symposiumModel}
+							paused={symposiumPaused}
+							interval={symposiumInterval}
+						/>
+					{/if}
+
 					{#if messages.at(0)?.parentId !== null}
 						<Loader
 							on:visible={(e) => {
@@ -516,21 +527,7 @@
 						{/if}
 					</ul>
 				</section>
-				<div class="{className} scrollbar-hidden" id="messages-container" bind:this={element}>
-					{#if topPadding}
-						<div class=" mb-2" />
-					{/if}
-
-					<!-- Symposium Status Bar -->
-					{#if symposiumStatus || symposiumModel}
-						<SymposiumStatusBar
-							status={symposiumStatus}
-							currentModel={symposiumModel}
-							paused={symposiumPaused}
-							interval={symposiumInterval}
-						/>
-					{/if}
-				</div>
+				<div class="pb-18" />
 				{#if bottomPadding}
 					<div class="  pb-6" />
 				{/if}
