@@ -134,6 +134,18 @@ async def get_user_chat_list_by_user_id(
 @router.post("/new", response_model=Optional[ChatResponse])
 async def create_new_chat(form_data: ChatForm, user=Depends(get_verified_user)):
     try:
+        # Fix for nested mode/config from frontend
+        if form_data.mode is None and "mode" in form_data.chat:
+            form_data.mode = form_data.chat["mode"]
+        
+        if form_data.config is None and "config" in form_data.chat:
+            form_data.config = form_data.chat["config"]
+            
+        # Ensure history is initialized for symposiums
+        if form_data.mode == "symposium":
+            if "history" not in form_data.chat:
+                form_data.chat["history"] = {"messages": {}, "currentId": None}
+
         chat = Chats.insert_new_chat(user.id, form_data)
         if form_data.mode == "symposium":
             await symposium_manager.start_symposium(chat.id)
