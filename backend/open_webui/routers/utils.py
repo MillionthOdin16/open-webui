@@ -7,6 +7,7 @@ from open_webui.config import DATA_DIR, ENABLE_ADMIN_EXPORT
 from open_webui.constants import ERROR_MESSAGES
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
+from typing import Optional
 from starlette.responses import FileResponse
 
 
@@ -86,6 +87,8 @@ async def get_html_from_markdown(
 class ChatForm(BaseModel):
     title: str
     messages: list[dict]
+    mode: Optional[str] = None
+    config: Optional[dict] = None
 
 
 @router.post("/pdf")
