@@ -3,7 +3,6 @@
 	import { createEventDispatcher, getContext } from 'svelte';
 	import { models } from '$lib/stores';
 	import Modal from '../common/Modal.svelte';
-	import ModelSelector from './ModelSelector.svelte';
 	import { createNewChat } from '$lib/apis/chats';
 	import { goto } from '$app/navigation';
 
@@ -20,12 +19,14 @@
 	const presets = [
 		{
 			name: 'Backrooms',
-			prompt: 'You are lost in the infinite backrooms. Yellow wallpaper, buzzing lights. Describe your sensory experience and encounters with echoes of yourself.',
+			prompt:
+				'You are lost in the infinite backrooms. Yellow wallpaper, buzzing lights. Describe your sensory experience and encounters with echoes of yourself.',
 			interval: 30
 		},
 		{
 			name: 'Philosophical Debate',
-			prompt: 'Debate the nature of consciousness. One of you is a materialist, the other an idealist.',
+			prompt:
+				'Debate the nature of consciousness. One of you is a materialist, the other an idealist.',
 			interval: 45
 		},
 		{
@@ -127,7 +128,56 @@
 
 				<div>
 					<div class="text-sm font-medium mb-1">{$i18n.t('Participants')}</div>
-					<ModelSelector bind:selectedModels showSetDefault={false} />
+					{#each selectedModels as selectedModel, idx}
+						<div class="flex gap-2 mb-2">
+							<select
+								class="flex-1 rounded-lg py-2 px-3 text-sm bg-gray-50 dark:bg-gray-850 border border-gray-100 dark:border-gray-800 outline-none"
+								bind:value={selectedModels[idx]}
+							>
+								<option value="">{$i18n.t('Select a model')}</option>
+								{#each $models as model}
+									<option value={model.id}>{model.name}</option>
+								{/each}
+							</select>
+
+							{#if idx === 0}
+								<button
+									class="px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition"
+									on:click={() => (selectedModels = [...selectedModels, ''])}
+									aria-label="Add Model"
+								>
+									<svg
+										class="w-4 h-4"
+										fill="none"
+										stroke="currentColor"
+										viewBox="0 0 24 24"
+										stroke-width="2"
+									>
+										<path stroke-linecap="round" stroke-linejoin="round" d="M12 6v12m6-6H6" />
+									</svg>
+								</button>
+							{:else}
+								<button
+									class="px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition"
+									on:click={() => {
+										selectedModels.splice(idx, 1);
+										selectedModels = selectedModels;
+									}}
+									aria-label="Remove Model"
+								>
+									<svg
+										class="w-4 h-4"
+										fill="none"
+										stroke="currentColor"
+										viewBox="0 0 24 24"
+										stroke-width="2"
+									>
+										<path stroke-linecap="round" stroke-linejoin="round" d="M19.5 12h-15" />
+									</svg>
+								</button>
+							{/if}
+						</div>
+					{/each}
 				</div>
 
 				<div>
@@ -140,7 +190,9 @@
 				</div>
 
 				<div>
-					<div class="text-sm font-medium mb-1">{$i18n.t('Autonomy Interval (seconds)')}: {interval}</div>
+					<div class="text-sm font-medium mb-1">
+						{$i18n.t('Autonomy Interval (seconds)')}: {interval}
+					</div>
 					<input
 						type="range"
 						min="5"
