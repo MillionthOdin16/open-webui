@@ -59,6 +59,7 @@
 	export let autoScroll;
 
 	export let onSelect = (e) => {};
+	export let isSymposium = false;
 
 	export let messagesCount: number | null = 20;
 	let messagesLoading = false;
@@ -505,6 +506,7 @@
 								{readOnly}
 								{editCodeBlock}
 								{topPadding}
+								{isSymposium}
 							/>
 						{/each}
 
