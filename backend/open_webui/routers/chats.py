@@ -499,6 +499,7 @@ class SymposiumConfigForm(BaseModel):
     interval: Optional[int] = None
     prompt: Optional[str] = None
     models: Optional[list[str]] = None
+    rules: Optional[dict] = None
 
 
 class TriggerForm(BaseModel):
@@ -508,6 +509,11 @@ class TriggerForm(BaseModel):
 class WhisperForm(BaseModel):
     model_id: str
     content: str
+
+
+class BotStateForm(BaseModel):
+    model_id: str
+    state: str  # "active", "listening", "muted"
 
 
 @router.put("/{id}/symposium/config", response_model=Optional[ChatResponse])
@@ -530,6 +536,8 @@ async def update_symposium_config(
         config["prompt"] = form_data.prompt
     if form_data.models is not None:
         config["models"] = form_data.models
+    if form_data.rules is not None:
+        config["rules"] = form_data.rules
 
     chat = Chats.update_chat_config_by_id(id, config)
     await symposium_manager.notify_update(id)
@@ -564,6 +572,52 @@ async def trigger_symposium_model(
 
     await symposium_manager.set_next_speaker(id, form_data.model_id)
     return True
+
+
+@router.post("/{id}/symposium/bot-state", response_model=bool)
+async def set_bot_state(
+    id: str, form_data: BotStateForm, user=Depends(get_verified_user)
+):
+    """Set the state of a bot in a symposium (active, listening, muted)."""
+    from open_webui.core.symposium import BotState
+    
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+    
+    try:
+        state = BotState(form_data.state)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid bot state. Must be 'active', 'listening', or 'muted'.",
+        )
+    
+    await symposium_manager.set_bot_state(id, form_data.model_id, state)
+    return True
+
+
+@router.get("/{id}/symposium/status")
+async def get_symposium_status(
+    id: str, user=Depends(get_verified_user)
+):
+    """Get the current status of a symposium including bot states and stats."""
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+    
+    return {
+        "active": symposium_manager.is_symposium_active(id),
+        "current_speaker": symposium_manager.get_current_speaker(id),
+        "bot_states": symposium_manager.get_all_bot_states(id),
+        "speaking_stats": symposium_manager.get_speaking_stats(id),
+    }
 
 
 ############################

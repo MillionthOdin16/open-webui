@@ -1139,6 +1139,7 @@
 												className=""
 												id={chat.id}
 												title={chat.title}
+												mode={chat.mode}
 												{shiftKey}
 												selected={selectedChatId === chat.id}
 												on:select={() => {
@@ -1199,6 +1200,7 @@
 										className=""
 										id={chat.id}
 										title={chat.title}
+										mode={chat.mode}
 										{shiftKey}
 										selected={selectedChatId === chat.id}
 										on:select={() => {
