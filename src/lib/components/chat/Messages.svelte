@@ -67,6 +67,7 @@
 	let symposiumModel = null;
 	let symposiumPaused = false;
 	let symposiumInterval = 30;
+	let symposiumParticipants: string[] = [];
 
 	$: symposiumModelName = $models.find((m) => m.id === symposiumModel)?.name || symposiumModel;
 
@@ -89,6 +90,7 @@
 		if (currentChat?.config) {
 			symposiumPaused = currentChat.config.paused || false;
 			symposiumInterval = currentChat.config.autonomous_interval || 30;
+			symposiumParticipants = currentChat.config.models || [];
 		}
 	}
 
@@ -449,12 +451,14 @@
 					<h2 class="sr-only" id="chat-conversation">{$i18n.t('Chat Conversation')}</h2>
 
 					<!-- Symposium Status Bar -->
-					{#if symposiumStatus || symposiumModel}
+					{#if symposiumParticipants.length > 0}
 						<SymposiumStatusBar
+							{chatId}
 							status={symposiumStatus}
 							currentModel={symposiumModel}
 							paused={symposiumPaused}
 							interval={symposiumInterval}
+							participants={symposiumParticipants}
 						/>
 					{/if}
 
