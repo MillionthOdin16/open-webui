@@ -4,7 +4,8 @@ import logging
 import time
 import uuid
 import re
-from typing import Dict, Optional, List, Set
+from collections import deque
+from typing import Dict, Optional, List, Set, Deque
 from enum import Enum
 
 from starlette.concurrency import run_in_threadpool
@@ -20,11 +21,26 @@ log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
 
+# Constants for symposium configuration
+MAX_SPEAKING_HISTORY_SIZE = 1000  # Maximum entries in speaking history to prevent memory leaks
+MIN_INTERVAL_SECONDS = 10  # Minimum interval to prevent API spam
+DEFAULT_INTERVAL_SECONDS = 30
+DEFAULT_CONTEXT_LIMIT = 20
+MAX_CONSECUTIVE_ERRORS = 3  # Circuit breaker threshold
+
+
 class BotState(str, Enum):
     ACTIVE = "active"       # Bot participates in conversation
     LISTENING = "listening" # Bot observes but doesn't speak unless tagged
     MUTED = "muted"         # Bot is completely silent
     SPEAKING = "speaking"   # Bot is currently generating a response
+
+
+class TurnTakingMode(str, Enum):
+    ROUND_ROBIN = "round_robin"  # Default: each bot speaks in order
+    RANDOM = "random"            # Random selection
+    WEIGHTED = "weighted"        # Less active bots get priority
+    DEBATE = "debate"            # Alternating between two sides
 
 
 class MockRequest:
@@ -34,6 +50,17 @@ class MockRequest:
 
 
 class SymposiumManager:
+    """
+    Manages autonomous multi-model conversations (symposiums).
+    
+    Features:
+    - Orchestrates turn-taking between AI models
+    - Supports bot states (active, listening, muted)
+    - Handles whispers (private instructions) and forced speaking
+    - Tracks speaking statistics
+    - Real-time WebSocket updates
+    """
+    
     def __init__(self):
         self.active_symposiums: Dict[str, asyncio.Task] = {}
         self.events: Dict[str, asyncio.Event] = {}
@@ -41,10 +68,15 @@ class SymposiumManager:
         self.whispers: Dict[str, Dict[str, str]] = {}
         # Bot states per symposium: {chat_id: {model_id: BotState}}
         self.bot_states: Dict[str, Dict[str, BotState]] = {}
-        # Speaking history: {chat_id: [(timestamp, model_id, word_count)]}
-        self.speaking_history: Dict[str, List[tuple]] = {}
+        # Speaking history with bounded size to prevent memory leaks
+        # Uses deque for O(1) operations: {chat_id: deque[(timestamp, model_id, word_count)]}
+        self.speaking_history: Dict[str, Deque[tuple]] = {}
         # Current speaker for each symposium
         self.current_speakers: Dict[str, Optional[str]] = {}
+        # Error tracking for circuit breaker pattern: {chat_id: {model_id: consecutive_errors}}
+        self.error_counts: Dict[str, Dict[str, int]] = {}
+        # Lock for thread-safe operations on symposium state
+        self._locks: Dict[str, asyncio.Lock] = {}
         self.app = None
 
     def init_app(self, app):
@@ -134,26 +166,70 @@ class SymposiumManager:
                 return m_id
         return None
 
-    async def start_symposium(self, chat_id: str):
-        if chat_id in self.active_symposiums:
-            return
+    def _get_lock(self, chat_id: str) -> asyncio.Lock:
+        """Get or create a lock for a specific chat."""
+        if chat_id not in self._locks:
+            self._locks[chat_id] = asyncio.Lock()
+        return self._locks[chat_id]
 
-        log.info(f"Starting symposium for chat {chat_id}")
-        self.events[chat_id] = asyncio.Event()
-        self.bot_states[chat_id] = {}
-        self.speaking_history[chat_id] = []
-        self.current_speakers[chat_id] = None
-        task = asyncio.create_task(self.symposium_loop(chat_id))
-        self.active_symposiums[chat_id] = task
-        
-        # Notify clients that symposium is active
-        await sio.emit(
-            "symposium:started",
-            {"chat_id": chat_id},
-        )
+    def _record_speaking_event(self, chat_id: str, model_id: str, word_count: int):
+        """Record a speaking event with bounded history to prevent memory leaks."""
+        if chat_id not in self.speaking_history:
+            self.speaking_history[chat_id] = deque(maxlen=MAX_SPEAKING_HISTORY_SIZE)
+        self.speaking_history[chat_id].append((int(time.time()), model_id, word_count))
+
+    def _record_error(self, chat_id: str, model_id: str) -> int:
+        """Record an error for circuit breaker. Returns current consecutive error count."""
+        if chat_id not in self.error_counts:
+            self.error_counts[chat_id] = {}
+        if model_id not in self.error_counts[chat_id]:
+            self.error_counts[chat_id][model_id] = 0
+        self.error_counts[chat_id][model_id] += 1
+        return self.error_counts[chat_id][model_id]
+
+    def _clear_errors(self, chat_id: str, model_id: str):
+        """Clear error count for a model after successful response."""
+        if chat_id in self.error_counts and model_id in self.error_counts[chat_id]:
+            self.error_counts[chat_id][model_id] = 0
+
+    def _is_model_circuit_open(self, chat_id: str, model_id: str) -> bool:
+        """Check if a model has too many consecutive errors (circuit breaker)."""
+        if chat_id not in self.error_counts:
+            return False
+        return self.error_counts.get(chat_id, {}).get(model_id, 0) >= MAX_CONSECUTIVE_ERRORS
+
+    async def start_symposium(self, chat_id: str):
+        """Start a new symposium for a chat. Thread-safe."""
+        lock = self._get_lock(chat_id)
+        async with lock:
+            if chat_id in self.active_symposiums:
+                log.debug(f"Symposium {chat_id} already active, skipping start")
+                return
+
+            log.info(f"Starting symposium for chat {chat_id}")
+            self.events[chat_id] = asyncio.Event()
+            self.bot_states[chat_id] = {}
+            self.speaking_history[chat_id] = deque(maxlen=MAX_SPEAKING_HISTORY_SIZE)
+            self.current_speakers[chat_id] = None
+            self.error_counts[chat_id] = {}
+            
+            task = asyncio.create_task(self.symposium_loop(chat_id))
+            self.active_symposiums[chat_id] = task
+            
+            # Notify clients that symposium is active
+            await sio.emit(
+                "symposium:started",
+                {"chat_id": chat_id},
+            )
 
     async def stop_symposium(self, chat_id: str):
-        if chat_id in self.active_symposiums:
+        """Stop a running symposium. Thread-safe."""
+        lock = self._get_lock(chat_id)
+        async with lock:
+            if chat_id not in self.active_symposiums:
+                log.debug(f"Symposium {chat_id} not active, skipping stop")
+                return
+                
             log.info(f"Stopping symposium for chat {chat_id}")
             task = self.active_symposiums[chat_id]
             task.cancel()
@@ -162,23 +238,25 @@ class SymposiumManager:
             except asyncio.CancelledError:
                 log.debug(f"Symposium task {chat_id} cancelled successfully")
             finally:
-                del self.active_symposiums[chat_id]
+                self.active_symposiums.pop(chat_id, None)
 
-        # Clean up all state
-        if chat_id in self.events:
-            del self.events[chat_id]
-        
-        self.overrides.pop(chat_id, None)
-        self.whispers.pop(chat_id, None)
-        self.bot_states.pop(chat_id, None)
-        self.speaking_history.pop(chat_id, None)
-        self.current_speakers.pop(chat_id, None)
-        
-        # Notify clients that symposium stopped
-        await sio.emit(
-            "symposium:stopped",
-            {"chat_id": chat_id},
-        )
+            # Clean up all state
+            self.events.pop(chat_id, None)
+            self.overrides.pop(chat_id, None)
+            self.whispers.pop(chat_id, None)
+            self.bot_states.pop(chat_id, None)
+            self.speaking_history.pop(chat_id, None)
+            self.current_speakers.pop(chat_id, None)
+            self.error_counts.pop(chat_id, None)
+            
+            # Clean up lock after everything is done
+            self._locks.pop(chat_id, None)
+            
+            # Notify clients that symposium stopped
+            await sio.emit(
+                "symposium:stopped",
+                {"chat_id": chat_id},
+            )
 
     async def symposium_loop(self, chat_id: str):
         event = self.events[chat_id]
@@ -200,8 +278,7 @@ class SymposiumManager:
                             pass
                         continue
 
-                    MIN_INTERVAL = 10  # Minimum 10 seconds to prevent API spam
-                    interval = max(MIN_INTERVAL, int(config.get('autonomous_interval', 30)))
+                    interval = max(MIN_INTERVAL_SECONDS, int(config.get('autonomous_interval', DEFAULT_INTERVAL_SECONDS)))
                     models = config.get('models', [])
 
                     if not models:
@@ -259,6 +336,24 @@ class SymposiumManager:
                     # Check bot state and find appropriate speaker
                     bot_state = self.get_bot_state(chat_id, next_model_id)
                     
+                    # Also check circuit breaker - skip models that have failed too many times
+                    if self._is_model_circuit_open(chat_id, next_model_id) and not was_tagged:
+                        log.debug(f"Symposium {chat_id}: Skipping {next_model_id} due to circuit breaker")
+                        # Find another model that doesn't have circuit open
+                        fallback_model = None
+                        for m_id in models:
+                            if m_id != next_model_id and not self._is_model_circuit_open(chat_id, m_id):
+                                if self.get_bot_state(chat_id, m_id) == BotState.ACTIVE:
+                                    fallback_model = m_id
+                                    break
+                        if fallback_model:
+                            next_model_id = fallback_model
+                        else:
+                            # All models have circuit open or are not active, wait and let them recover
+                            log.warning(f"Symposium {chat_id}: All models have circuit breaker open")
+                            await asyncio.sleep(interval * 2)  # Wait longer to let models recover
+                            continue
+                    
                     if bot_state == BotState.MUTED:
                         # Muted bot can't speak, find any active bot
                         active_bot = self.find_any_active_bot(chat_id, models)
@@ -286,7 +381,7 @@ class SymposiumManager:
                                 pass
                             continue
 
-                    context_limit = int(config.get('context_limit', 20))
+                    context_limit = int(config.get('context_limit', DEFAULT_CONTEXT_LIMIT))
                     recent_msgs = sorted_messages[-context_limit:]
 
                     messages_payload = []
@@ -407,11 +502,12 @@ class SymposiumManager:
                                         chat_id, message['parentId'], parent
                                     )
 
-                            # Track speaking history
+                            # Track speaking history using bounded deque
                             word_count = len(content.split())
-                            if chat_id not in self.speaking_history:
-                                self.speaking_history[chat_id] = []
-                            self.speaking_history[chat_id].append((int(time.time()), next_model_id, word_count))
+                            self._record_speaking_event(chat_id, next_model_id, word_count)
+                            
+                            # Clear error count on successful response
+                            self._clear_errors(chat_id, next_model_id)
                             
                             # Emit symposium message for real-time update
                             await sio.emit("symposium:message", {"chat_id": chat_id, "message": message})
@@ -431,15 +527,25 @@ class SymposiumManager:
                         )
                     except Exception as e:
                         log.error(f"Symposium {chat_id}: Model {next_model_id} failed: {e}")
+                        
+                        # Record error for circuit breaker
+                        error_count = self._record_error(chat_id, next_model_id)
+                        
                         # Reset bot state on error
                         await self.set_bot_state(chat_id, next_model_id, BotState.ACTIVE)
                         self.current_speakers[chat_id] = None
                         
+                        error_message = str(e)[:100]
+                        if error_count >= MAX_CONSECUTIVE_ERRORS:
+                            error_message = f"Circuit breaker: {error_count} consecutive errors"
+                            log.warning(f"Symposium {chat_id}: Model {next_model_id} circuit breaker opened")
+                        
                         await sio.emit("symposium:status", {
                             "chat_id": chat_id,
                             "model": next_model_id,
-                            "status": f"Error: {str(e)[:100]}",
-                            "error": True
+                            "status": f"Error: {error_message}",
+                            "error": True,
+                            "circuit_open": error_count >= MAX_CONSECUTIVE_ERRORS
                         })
                         # Continue to next iteration instead of crashing
                         await asyncio.sleep(5)
