@@ -508,32 +508,47 @@
 							/>
 						{/each}
 
-						{#if symposiumStatus}
+						{#if symposiumStatus && symposiumModel}
+							{@const speakingModel = $models.find(m => m.id === symposiumModel)}
 							<li class="flex flex-col justify-between px-5 mb-3 w-full max-w-5xl mx-auto">
-								<div class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400">
-									<div class="flex space-x-1">
-										<div
-											class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-											style="animation-delay: 0s"
-										></div>
-										<div
-											class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-											style="animation-delay: 0.2s"
-										></div>
-										<div
-											class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-											style="animation-delay: 0.4s"
-										></div>
+								<div class="flex items-center gap-3 p-4 rounded-2xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 border border-emerald-200/50 dark:border-emerald-800/50">
+									<div class="relative flex-shrink-0">
+										<img
+											src={speakingModel?.info?.meta?.profile_image_url || `/api/models/model/profile/image?id=${symposiumModel}`}
+											alt={symposiumModelName}
+											class="w-10 h-10 rounded-full object-cover ring-2 ring-emerald-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900"
+										/>
+										<div class="absolute -bottom-1 -right-1 w-5 h-5 bg-emerald-500 rounded-full flex items-center justify-center">
+											<svg class="w-3 h-3 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+												<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+												<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+											</svg>
+										</div>
 									</div>
-									<div>{symposiumModelName} is thinking...</div>
+									<div class="flex-1">
+										<div class="flex items-center gap-2">
+											<span class="font-semibold text-gray-900 dark:text-white">{symposiumModelName}</span>
+											<span class="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
+												{symposiumStatus}
+											</span>
+										</div>
+										<div class="flex items-center gap-2 mt-1">
+											<div class="flex gap-1">
+												<div class="w-2 h-2 bg-emerald-500 rounded-full animate-bounce" style="animation-delay: 0s;"></div>
+												<div class="w-2 h-2 bg-emerald-500 rounded-full animate-bounce" style="animation-delay: 0.15s;"></div>
+												<div class="w-2 h-2 bg-emerald-500 rounded-full animate-bounce" style="animation-delay: 0.3s;"></div>
+											</div>
+											<span class="text-sm text-gray-500 dark:text-gray-400">{$i18n.t('Composing response...')}</span>
+										</div>
+									</div>
 								</div>
 							</li>
 						{/if}
 					</ul>
 				</section>
-				<div class="pb-18" />
+				<div class="pb-18"></div>
 				{#if bottomPadding}
-					<div class="  pb-6" />
+					<div class="  pb-6"></div>
 				{/if}
 			{/key}
 		</div>
