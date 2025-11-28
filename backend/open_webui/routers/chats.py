@@ -507,6 +507,7 @@ async def splice_chat_message(
 class SymposiumConfigForm(BaseModel):
     paused: Optional[bool] = None
     interval: Optional[int] = None
+    context_limit: Optional[int] = None
     prompt: Optional[str] = None
     models: Optional[list[str]] = None
     rules: Optional[dict] = None
@@ -542,6 +543,8 @@ async def update_symposium_config(
         config["paused"] = form_data.paused
     if form_data.interval is not None:
         config["autonomous_interval"] = form_data.interval
+    if form_data.context_limit is not None:
+        config["context_limit"] = form_data.context_limit
     if form_data.prompt is not None:
         config["prompt"] = form_data.prompt
     if form_data.models is not None:
@@ -628,6 +631,31 @@ async def get_symposium_status(
         "bot_states": symposium_manager.get_all_bot_states(id),
         "speaking_stats": symposium_manager.get_speaking_stats(id),
     }
+
+
+@router.post("/{id}/symposium/resume", response_model=bool)
+async def resume_symposium(
+    id: str, user=Depends(get_verified_user)
+):
+    """Resume a stopped symposium."""
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+    
+    if chat.mode != "symposium":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chat is not a symposium",
+        )
+    
+    # Start the symposium if not already running
+    if not symposium_manager.is_symposium_active(id):
+        await symposium_manager.start_symposium(id)
+    
+    return True
 
 
 ############################
