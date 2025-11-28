@@ -444,6 +444,11 @@ async def get_chat_by_id(id: str, user=Depends(get_verified_user)):
     chat = Chats.get_chat_by_id_and_user_id(id, user.id)
 
     if chat:
+        # Auto-start symposium if it's a symposium chat and not already running
+        if chat.mode == "symposium" and not symposium_manager.is_symposium_active(id):
+            config = chat.config or {}
+            if not config.get("paused", False):
+                await symposium_manager.start_symposium(id)
         return ChatResponse(**chat.model_dump())
 
     else:
@@ -465,6 +470,11 @@ async def update_chat_by_id(
     if chat:
         updated_chat = {**chat.chat, **form_data.chat}
         chat = Chats.update_chat_by_id(id, updated_chat)
+        
+        # Notify symposium of chat update (new user message, etc.)
+        if chat.mode == "symposium" and symposium_manager.is_symposium_active(id):
+            await symposium_manager.notify_update(id)
+        
         return ChatResponse(**chat.model_dump())
     else:
         raise HTTPException(
@@ -728,6 +738,10 @@ async def send_chat_message_event_by_id(
 
 @router.delete("/{id}", response_model=bool)
 async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified_user)):
+    # Stop symposium if running
+    if symposium_manager.is_symposium_active(id):
+        await symposium_manager.stop_symposium(id)
+    
     if user.role == "admin":
         chat = Chats.get_chat_by_id(id)
         for tag in chat.meta.get("tags", []):
@@ -897,6 +911,10 @@ async def archive_chat_by_id(id: str, user=Depends(get_verified_user)):
     chat = Chats.get_chat_by_id_and_user_id(id, user.id)
     if chat:
         chat = Chats.toggle_chat_archive_by_id(id)
+
+        # Stop symposium if chat is being archived
+        if chat.archived and symposium_manager.is_symposium_active(id):
+            await symposium_manager.stop_symposium(id)
 
         # Delete tags if chat is archived
         if chat.archived:

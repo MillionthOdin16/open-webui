@@ -114,6 +114,26 @@ class SymposiumManager:
         """Get the current speaker in a symposium."""
         return self.current_speakers.get(chat_id)
 
+    def find_next_active_bot(self, chat_id: str, models: List[str], start_model: str) -> Optional[str]:
+        """
+        Find the next active bot in the model list, starting from a given model.
+        Returns None if no active bots are found.
+        """
+        start_idx = models.index(start_model) if start_model in models else 0
+        for i in range(len(models)):
+            check_idx = (start_idx + i + 1) % len(models)
+            m_id = models[check_idx]
+            if self.get_bot_state(chat_id, m_id) == BotState.ACTIVE:
+                return m_id
+        return None
+
+    def find_any_active_bot(self, chat_id: str, models: List[str]) -> Optional[str]:
+        """Find any active bot in the symposium."""
+        for m_id in models:
+            if self.get_bot_state(chat_id, m_id) == BotState.ACTIVE:
+                return m_id
+        return None
+
     async def start_symposium(self, chat_id: str):
         if chat_id in self.active_symposiums:
             return
@@ -236,18 +256,16 @@ class SymposiumManager:
                             else:
                                 next_model_id = models[0]
                     
-                    # Check bot state - skip if muted, or if listening and not tagged
+                    # Check bot state and find appropriate speaker
                     bot_state = self.get_bot_state(chat_id, next_model_id)
+                    
                     if bot_state == BotState.MUTED:
-                        # Find next active bot
-                        active_found = False
-                        for m_id in models:
-                            if self.get_bot_state(chat_id, m_id) == BotState.ACTIVE:
-                                next_model_id = m_id
-                                active_found = True
-                                break
-                        if not active_found:
-                            # All bots are muted or listening, wait
+                        # Muted bot can't speak, find any active bot
+                        active_bot = self.find_any_active_bot(chat_id, models)
+                        if active_bot:
+                            next_model_id = active_bot
+                        else:
+                            # All bots are muted or listening, wait for update
                             try:
                                 await asyncio.wait_for(event.wait(), timeout=interval)
                                 event.clear()
@@ -255,19 +273,12 @@ class SymposiumManager:
                                 pass
                             continue
                     elif bot_state == BotState.LISTENING and not was_tagged:
-                        # Listening bot - only respond if tagged, otherwise skip to next active bot
-                        found_next = False
-                        start_idx = models.index(next_model_id) if next_model_id in models else 0
-                        for i in range(len(models)):
-                            check_idx = (start_idx + i + 1) % len(models)
-                            m_id = models[check_idx]
-                            m_state = self.get_bot_state(chat_id, m_id)
-                            if m_state == BotState.ACTIVE:
-                                next_model_id = m_id
-                                found_next = True
-                                break
-                        if not found_next:
-                            # No active bots, wait
+                        # Listening bot only responds when tagged, find next active bot
+                        active_bot = self.find_next_active_bot(chat_id, models, next_model_id)
+                        if active_bot:
+                            next_model_id = active_bot
+                        else:
+                            # No active bots available, wait
                             try:
                                 await asyncio.wait_for(event.wait(), timeout=interval)
                                 event.clear()

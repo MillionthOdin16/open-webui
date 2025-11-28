@@ -130,7 +130,9 @@
 	};
 
 	const removeParticipant = (id: string) => {
-		if (chat.config.models.length <= 2) {
+		// Ensure at least 2 participants remain after removal
+		const currentCount = chat.config.models.length;
+		if (currentCount <= 2) {
 			toast.error($i18n.t('Symposium requires at least 2 participants'));
 			return;
 		}
