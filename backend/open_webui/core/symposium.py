@@ -4,7 +4,8 @@ import logging
 import time
 import uuid
 import re
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Set
+from enum import Enum
 
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse, JSONResponse
@@ -18,10 +19,19 @@ from open_webui.env import SRC_LOG_LEVELS
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
+
+class BotState(str, Enum):
+    ACTIVE = "active"       # Bot participates in conversation
+    LISTENING = "listening" # Bot observes but doesn't speak unless tagged
+    MUTED = "muted"         # Bot is completely silent
+    SPEAKING = "speaking"   # Bot is currently generating a response
+
+
 class MockRequest:
     def __init__(self, app):
         self.app = app
         self.state = type('MockState', (), {})()
+
 
 class SymposiumManager:
     def __init__(self):
@@ -29,10 +39,58 @@ class SymposiumManager:
         self.events: Dict[str, asyncio.Event] = {}
         self.overrides: Dict[str, str] = {}
         self.whispers: Dict[str, Dict[str, str]] = {}
+        # Bot states per symposium: {chat_id: {model_id: BotState}}
+        self.bot_states: Dict[str, Dict[str, BotState]] = {}
+        # Speaking history: {chat_id: [(timestamp, model_id, word_count)]}
+        self.speaking_history: Dict[str, List[tuple]] = {}
+        # Current speaker for each symposium
+        self.current_speakers: Dict[str, Optional[str]] = {}
         self.app = None
 
     def init_app(self, app):
         self.app = app
+
+    def get_bot_state(self, chat_id: str, model_id: str) -> BotState:
+        """Get the current state of a bot in a symposium."""
+        if chat_id not in self.bot_states:
+            return BotState.ACTIVE
+        return self.bot_states.get(chat_id, {}).get(model_id, BotState.ACTIVE)
+
+    async def set_bot_state(self, chat_id: str, model_id: str, state: BotState):
+        """Set the state of a bot in a symposium."""
+        if chat_id not in self.bot_states:
+            self.bot_states[chat_id] = {}
+        self.bot_states[chat_id][model_id] = state
+        
+        # Emit state change to clients
+        await sio.emit(
+            "symposium:bot_state",
+            {
+                "chat_id": chat_id,
+                "model_id": model_id,
+                "state": state.value,
+            },
+        )
+
+    def get_all_bot_states(self, chat_id: str) -> Dict[str, str]:
+        """Get all bot states for a symposium."""
+        if chat_id not in self.bot_states:
+            return {}
+        return {k: v.value for k, v in self.bot_states.get(chat_id, {}).items()}
+
+    def get_speaking_stats(self, chat_id: str) -> Dict[str, dict]:
+        """Get speaking statistics for each bot in a symposium."""
+        history = self.speaking_history.get(chat_id, [])
+        stats: Dict[str, dict] = {}
+        
+        for timestamp, model_id, word_count in history:
+            if model_id not in stats:
+                stats[model_id] = {"message_count": 0, "word_count": 0, "last_spoke": 0}
+            stats[model_id]["message_count"] += 1
+            stats[model_id]["word_count"] += word_count
+            stats[model_id]["last_spoke"] = max(stats[model_id]["last_spoke"], timestamp)
+        
+        return stats
 
     async def set_next_speaker(self, chat_id: str, model_id: str):
         self.overrides[chat_id] = model_id
@@ -48,14 +106,51 @@ class SymposiumManager:
         if chat_id in self.events:
             self.events[chat_id].set()
 
+    def is_symposium_active(self, chat_id: str) -> bool:
+        """Check if a symposium is currently active."""
+        return chat_id in self.active_symposiums
+
+    def get_current_speaker(self, chat_id: str) -> Optional[str]:
+        """Get the current speaker in a symposium."""
+        return self.current_speakers.get(chat_id)
+
+    def find_next_active_bot(self, chat_id: str, models: List[str], start_model: str) -> Optional[str]:
+        """
+        Find the next active bot in the model list, starting from a given model.
+        Returns None if no active bots are found.
+        """
+        start_idx = models.index(start_model) if start_model in models else 0
+        for i in range(len(models)):
+            check_idx = (start_idx + i + 1) % len(models)
+            m_id = models[check_idx]
+            if self.get_bot_state(chat_id, m_id) == BotState.ACTIVE:
+                return m_id
+        return None
+
+    def find_any_active_bot(self, chat_id: str, models: List[str]) -> Optional[str]:
+        """Find any active bot in the symposium."""
+        for m_id in models:
+            if self.get_bot_state(chat_id, m_id) == BotState.ACTIVE:
+                return m_id
+        return None
+
     async def start_symposium(self, chat_id: str):
         if chat_id in self.active_symposiums:
             return
 
         log.info(f"Starting symposium for chat {chat_id}")
         self.events[chat_id] = asyncio.Event()
+        self.bot_states[chat_id] = {}
+        self.speaking_history[chat_id] = []
+        self.current_speakers[chat_id] = None
         task = asyncio.create_task(self.symposium_loop(chat_id))
         self.active_symposiums[chat_id] = task
+        
+        # Notify clients that symposium is active
+        await sio.emit(
+            "symposium:started",
+            {"chat_id": chat_id},
+        )
 
     async def stop_symposium(self, chat_id: str):
         if chat_id in self.active_symposiums:
@@ -75,6 +170,15 @@ class SymposiumManager:
         
         self.overrides.pop(chat_id, None)
         self.whispers.pop(chat_id, None)
+        self.bot_states.pop(chat_id, None)
+        self.speaking_history.pop(chat_id, None)
+        self.current_speakers.pop(chat_id, None)
+        
+        # Notify clients that symposium stopped
+        await sio.emit(
+            "symposium:stopped",
+            {"chat_id": chat_id},
+        )
 
     async def symposium_loop(self, chat_id: str):
         event = self.events[chat_id]
@@ -117,9 +221,11 @@ class SymposiumManager:
 
                     next_model_id = models[0]
                     override_model = self.overrides.pop(chat_id, None)
+                    was_tagged = False
 
                     if override_model and override_model in models:
                         next_model_id = override_model
+                        was_tagged = True
                     elif sorted_messages:
                         last_msg = sorted_messages[-1]
 
@@ -132,6 +238,7 @@ class SymposiumManager:
                             for m_id in models:
                                 if tag.lower() in m_id.lower():
                                     tag_override = m_id
+                                    was_tagged = True
                                     break
                             if tag_override:
                                 break
@@ -148,6 +255,36 @@ class SymposiumManager:
                                     pass
                             else:
                                 next_model_id = models[0]
+                    
+                    # Check bot state and find appropriate speaker
+                    bot_state = self.get_bot_state(chat_id, next_model_id)
+                    
+                    if bot_state == BotState.MUTED:
+                        # Muted bot can't speak, find any active bot
+                        active_bot = self.find_any_active_bot(chat_id, models)
+                        if active_bot:
+                            next_model_id = active_bot
+                        else:
+                            # All bots are muted or listening, wait for update
+                            try:
+                                await asyncio.wait_for(event.wait(), timeout=interval)
+                                event.clear()
+                            except asyncio.TimeoutError:
+                                pass
+                            continue
+                    elif bot_state == BotState.LISTENING and not was_tagged:
+                        # Listening bot only responds when tagged, find next active bot
+                        active_bot = self.find_next_active_bot(chat_id, models, next_model_id)
+                        if active_bot:
+                            next_model_id = active_bot
+                        else:
+                            # No active bots available, wait
+                            try:
+                                await asyncio.wait_for(event.wait(), timeout=interval)
+                                event.clear()
+                            except asyncio.TimeoutError:
+                                pass
+                            continue
 
                     context_limit = int(config.get('context_limit', 20))
                     recent_msgs = sorted_messages[-context_limit:]
@@ -191,6 +328,10 @@ class SymposiumManager:
                     }
 
                     log.info(f"Symposium {chat_id}: Generating response from {next_model_id}")
+                    
+                    # Set current speaker and update bot state
+                    self.current_speakers[chat_id] = next_model_id
+                    await self.set_bot_state(chat_id, next_model_id, BotState.SPEAKING)
 
                     await sio.emit(
                         "symposium:status",
@@ -266,8 +407,19 @@ class SymposiumManager:
                                         chat_id, message['parentId'], parent
                                     )
 
+                            # Track speaking history
+                            word_count = len(content.split())
+                            if chat_id not in self.speaking_history:
+                                self.speaking_history[chat_id] = []
+                            self.speaking_history[chat_id].append((int(time.time()), next_model_id, word_count))
+                            
                             # Emit symposium message for real-time update
                             await sio.emit("symposium:message", {"chat_id": chat_id, "message": message})
+                        
+                        # Reset bot state from speaking to previous state (active by default)
+                        prev_state = BotState.ACTIVE
+                        await self.set_bot_state(chat_id, next_model_id, prev_state)
+                        self.current_speakers[chat_id] = None
 
                         await sio.emit(
                             "symposium:status",
@@ -279,6 +431,10 @@ class SymposiumManager:
                         )
                     except Exception as e:
                         log.error(f"Symposium {chat_id}: Model {next_model_id} failed: {e}")
+                        # Reset bot state on error
+                        await self.set_bot_state(chat_id, next_model_id, BotState.ACTIVE)
+                        self.current_speakers[chat_id] = None
+                        
                         await sio.emit("symposium:status", {
                             "chat_id": chat_id,
                             "model": next_model_id,

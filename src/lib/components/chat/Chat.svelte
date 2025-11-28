@@ -2552,6 +2552,7 @@
 										topPadding={true}
 										bottomPadding={files.length > 0}
 										{onSelect}
+										isSymposium={chat?.mode === 'symposium'}
 									/>
 								</div>
 							</div>

@@ -1,33 +1,103 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getContext, onMount, onDestroy } from 'svelte';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { toast } from 'svelte-sonner';
-	import { symposiumPodcastMode } from '$lib/stores';
+	import { symposiumPodcastMode, socket } from '$lib/stores';
 	import {
 		exportSymposiumConfig,
 		downloadSymposiumConfig,
 		importSymposiumConfig
 	} from '$lib/utils/symposium';
+	import Tooltip from '../common/Tooltip.svelte';
 
 	const i18n = getContext('i18n');
 	export let chat;
 
 	let paused = false;
 	let interval = 30;
+	let contextLimit = 20;
 	let prompt = '';
+	let narratorText = '';
 	let fileInput: HTMLInputElement;
+	let showPromptEditor = false;
+	let showNarratorInput = false;
+	let showAdvanced = false;
+	let isSymposiumActive = false;
+	let lastHeartbeat = 0;
 
 	$: if (chat && chat.config) {
 		paused = chat.config.paused ?? false;
 		interval = chat.config.autonomous_interval ?? 30;
-		// Only set prompt if it hasn't been edited locally to avoid overwrite on polling (if any)
+		contextLimit = chat.config.context_limit ?? 20;
 		if (prompt === '') prompt = chat.config.prompt ?? '';
 	}
 
+	// Check symposium status
+	const checkSymposiumStatus = async () => {
+		try {
+			const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/symposium/status`, {
+				headers: { authorization: `Bearer ${localStorage.token}` }
+			});
+			if (res.ok) {
+				const data = await res.json();
+				isSymposiumActive = data.active;
+				lastHeartbeat = Date.now();
+			}
+		} catch (e) {
+			console.error('Error checking symposium status:', e);
+		}
+	};
+
+	// Resume symposium if it's not running
+	const resumeSymposium = async () => {
+		try {
+			const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/symposium/resume`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					authorization: `Bearer ${localStorage.token}`
+				}
+			});
+			if (res.ok) {
+				isSymposiumActive = true;
+				toast.success($i18n.t('Symposium resumed'));
+			} else {
+				toast.error($i18n.t('Failed to resume symposium'));
+			}
+		} catch (e) {
+			toast.error($i18n.t('Network error'));
+		}
+	};
+
+	// Send narrator/splice message
+	const sendNarratorMessage = async () => {
+		if (!narratorText.trim()) return;
+		
+		try {
+			const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/splice`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					authorization: `Bearer ${localStorage.token}`
+				},
+				body: JSON.stringify({ content: narratorText })
+			});
+			if (res.ok) {
+				toast.success($i18n.t('Narrator event injected'));
+				narratorText = '';
+				showNarratorInput = false;
+			} else {
+				toast.error($i18n.t('Failed to inject narrator event'));
+			}
+		} catch (e) {
+			toast.error($i18n.t('Network error'));
+		}
+	};
+
 	const updateConfig = async () => {
-		// Update local chat config immediately to reflect changes
 		chat.config.paused = paused;
 		chat.config.autonomous_interval = interval;
+		chat.config.context_limit = contextLimit;
 		chat.config.prompt = prompt;
 
 		const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${chat.id}/symposium/config`, {
@@ -39,18 +109,35 @@
 			body: JSON.stringify({
 				paused: paused,
 				interval: interval,
-				prompt: prompt // Sending prompt too, but backend needs to support it?
+				context_limit: contextLimit,
+				prompt: prompt
 			})
 		});
 		if (!res.ok) {
-			toast.error('Failed to update symposium config');
+			toast.error($i18n.t('Failed to update symposium config'));
 		}
 	};
+
+	const onSymposiumStatus = (data: any) => {
+		if (data.chat_id === chat.id) {
+			lastHeartbeat = Date.now();
+			isSymposiumActive = true;
+		}
+	};
+
+	onMount(() => {
+		checkSymposiumStatus();
+		$socket?.on('symposium:status', onSymposiumStatus);
+	});
+
+	onDestroy(() => {
+		$socket?.off('symposium:status', onSymposiumStatus);
+	});
 
 	const handleExport = () => {
 		const config = exportSymposiumConfig(chat);
 		downloadSymposiumConfig(config);
-		toast.success('Configuration exported successfully');
+		toast.success($i18n.t('Configuration exported successfully'));
 	};
 
 	const handleImportClick = () => {
@@ -64,117 +151,220 @@
 
 		try {
 			const config = await importSymposiumConfig(file);
-
-			// Update local state
 			prompt = config.config.prompt;
 			interval = config.config.autonomous_interval;
-
-			// Update chat config
 			chat.config.prompt = config.config.prompt;
 			chat.config.autonomous_interval = config.config.autonomous_interval;
 			chat.config.context_limit = config.config.context_limit;
-
-			// Save to backend
 			await updateConfig();
-			toast.success('Configuration imported successfully');
+			toast.success($i18n.t('Configuration imported successfully'));
 		} catch (error) {
-			toast.error(error.message || 'Failed to import configuration');
+			toast.error(error.message || $i18n.t('Failed to import configuration'));
 		}
-
-		// Reset file input
 		target.value = '';
 	};
 </script>
 
-<div class="p-4 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
-	<div class="flex items-center justify-between mb-4">
-		<div class="text-sm font-medium dark:text-gray-200">{$i18n.t('Controls')}</div>
-		<button
-			class="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors {paused
-				? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:hover:bg-emerald-900/50'
-				: 'bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-200 dark:hover:bg-amber-900/50'}"
-			on:click={() => {
-				paused = !paused;
-				updateConfig();
-			}}
-		>
-			{paused ? $i18n.t('Resume Loop') : $i18n.t('Pause Loop')}
-		</button>
-	</div>
-	<div class="space-y-3">
-		<div>
-			<div class="text-xs text-gray-500 dark:text-gray-400 mb-1">
-				{$i18n.t('System Context')}
+<div class="p-4 bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950">
+	<!-- Status Indicator -->
+	{#if !isSymposiumActive && !paused}
+		<div class="mb-3 p-3 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-800">
+			<div class="flex items-center gap-2 text-red-700 dark:text-red-300">
+				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+					<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd" />
+				</svg>
+				<span class="text-sm font-medium">{$i18n.t('Symposium process stopped')}</span>
 			</div>
-			<textarea
-				class="w-full h-20 rounded-lg text-xs bg-gray-100 dark:bg-gray-800 border-none p-2 resize-none focus:ring-1 focus:ring-emerald-500 outline-none"
-				bind:value={prompt}
+			<button
+				class="mt-2 w-full py-2 px-3 bg-red-500 hover:bg-red-600 text-white text-sm rounded-lg font-medium transition-colors"
+				on:click={resumeSymposium}
+			>
+				{$i18n.t('Restart Symposium')}
+			</button>
+		</div>
+	{/if}
+
+	<!-- Main Control Button -->
+	<button
+		class="w-full py-3 px-4 rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2
+			{paused
+				? 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white shadow-lg shadow-emerald-500/25'
+				: 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white shadow-lg shadow-amber-500/25'}"
+		on:click={() => {
+			paused = !paused;
+			updateConfig();
+		}}
+	>
+		{#if paused}
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+				<path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+			</svg>
+			{$i18n.t('Resume Symposium')}
+		{:else}
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+				<path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z" />
+			</svg>
+			{$i18n.t('Pause Symposium')}
+		{/if}
+	</button>
+
+	<!-- Narrator/Splice Input -->
+	<div class="mt-3">
+		<button
+			class="w-full flex items-center justify-between p-3 bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 rounded-xl border border-purple-200 dark:border-purple-800 hover:border-purple-300 dark:hover:border-purple-700 transition-colors"
+			on:click={() => showNarratorInput = !showNarratorInput}
+		>
+			<div class="flex items-center gap-2">
+				<span class="text-lg">📢</span>
+				<span class="text-sm font-medium text-purple-700 dark:text-purple-300">{$i18n.t('Narrator Event')}</span>
+			</div>
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-purple-400 transition-transform {showNarratorInput ? 'rotate-180' : ''}">
+				<path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" />
+			</svg>
+		</button>
+		
+		{#if showNarratorInput}
+			<div class="mt-2 p-3 bg-white dark:bg-gray-800 rounded-xl border border-purple-200 dark:border-purple-700">
+				<p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{$i18n.t('Inject a narrator event into the conversation (e.g., "A dragon suddenly appears")')}</p>
+				<textarea
+					class="w-full h-20 text-sm bg-gray-50 dark:bg-gray-900 rounded-lg p-2 border border-gray-200 dark:border-gray-700 resize-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none"
+					placeholder={$i18n.t('Enter narrator text...')}
+					bind:value={narratorText}
+				></textarea>
+				<button
+					class="mt-2 w-full py-2 px-3 bg-purple-500 hover:bg-purple-600 text-white text-sm rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+					on:click={sendNarratorMessage}
+					disabled={!narratorText.trim()}
+				>
+					{$i18n.t('Inject Event')}
+				</button>
+			</div>
+		{/if}
+	</div>
+
+	<!-- Quick Settings Row -->
+	<div class="mt-4 grid grid-cols-2 gap-3">
+		<!-- Interval Control -->
+		<div class="bg-white dark:bg-gray-800 rounded-xl p-3 border border-gray-200 dark:border-gray-700">
+			<div class="flex items-center justify-between mb-2">
+				<span class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Interval')}</span>
+				<span class="text-sm font-bold text-emerald-600 dark:text-emerald-400">{interval}s</span>
+			</div>
+			<input
+				type="range"
+				min="10"
+				max="120"
+				step="5"
+				class="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700 accent-emerald-500"
+				bind:value={interval}
 				on:change={updateConfig}
 			/>
 		</div>
 
-		<div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-			<span>{$i18n.t('Response Interval')}</span>
-			<span class="font-mono">{interval}s</span>
+		<!-- Podcast Mode Toggle -->
+		<div class="bg-white dark:bg-gray-800 rounded-xl p-3 border border-gray-200 dark:border-gray-700">
+			<div class="flex items-center justify-between mb-2">
+				<span class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Podcast')}</span>
+				<span class="text-lg">🎙️</span>
+			</div>
+			<button
+				class="w-full py-1.5 text-xs font-medium rounded-lg transition-all
+					{$symposiumPodcastMode
+						? 'bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300'
+						: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'}"
+				on:click={() => symposiumPodcastMode.update((v) => !v)}
+			>
+				{$symposiumPodcastMode ? $i18n.t('Enabled') : $i18n.t('Disabled')}
+			</button>
+		</div>
+	</div>
+
+	<!-- Context Limit Control -->
+	<div class="mt-3 bg-white dark:bg-gray-800 rounded-xl p-3 border border-gray-200 dark:border-gray-700">
+		<div class="flex items-center justify-between mb-2">
+			<div class="flex items-center gap-1.5">
+				<span class="text-xs font-medium text-gray-500 dark:text-gray-400">{$i18n.t('Memory (messages)')}</span>
+				<Tooltip content={$i18n.t('Number of past messages each AI can see. Higher = better context but slower.')}>
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5 text-gray-400">
+						<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM8.94 6.94a.75.75 0 11-1.061-1.061 3 3 0 112.871 5.026v.345a.75.75 0 01-1.5 0v-.5c0-.72.57-1.172 1.081-1.287A1.5 1.5 0 108.94 6.94zM10 15a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+					</svg>
+				</Tooltip>
+			</div>
+			<span class="text-sm font-bold text-blue-600 dark:text-blue-400">{contextLimit}</span>
 		</div>
 		<input
 			type="range"
 			min="5"
-			max="300"
+			max="50"
 			step="5"
-			class="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700 accent-emerald-600 hover:accent-emerald-500"
-			bind:value={interval}
+			class="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700 accent-blue-500"
+			bind:value={contextLimit}
 			on:change={updateConfig}
 		/>
-	</div>
-
-	<div class="flex items-center justify-between mt-4">
-		<div class="text-xs text-gray-500 dark:text-gray-400">{$i18n.t('Podcast Mode')}</div>
-		<button
-			class="px-2 py-1 text-xs font-medium rounded-lg transition-colors {$symposiumPodcastMode
-				? 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-200'
-				: 'bg-gray-200 text-gray-800 dark:bg-gray-800 dark:text-gray-300'}"
-			on:click={() => symposiumPodcastMode.update((v) => !v)}
-		>
-			{$symposiumPodcastMode ? $i18n.t('ON') : $i18n.t('OFF')}
-		</button>
-	</div>
-
-	<div
-		class="flex items-center justify-between mt-3 pt-3 border-t border-gray-200 dark:border-gray-700"
-	>
-		<div class="text-xs text-gray-500 dark:text-gray-400">{$i18n.t('Configuration')}</div>
-		<div class="flex space-x-2">
-			<button
-				class="px-2 py-1 text-xs font-medium rounded-lg transition-colors bg-gray-200 text-gray-800 dark:bg-gray-800 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700"
-				on:click={handleExport}
-				title="Export configuration"
-			>
-				<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-					/>
-				</svg>
-			</button>
-			<button
-				class="px-2 py-1 text-xs font-medium rounded-lg transition-colors bg-gray-200 text-gray-800 dark:bg-gray-800 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700"
-				on:click={handleImportClick}
-				title="Import configuration"
-			>
-				<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
-					/>
-				</svg>
-			</button>
+		<div class="flex justify-between text-xs text-gray-400 mt-1">
+			<span>{$i18n.t('Fast')}</span>
+			<span>{$i18n.t('More context')}</span>
 		</div>
 	</div>
+
+	<!-- Topic/Prompt Section -->
+	<div class="mt-4">
+		<button
+			class="w-full flex items-center justify-between p-3 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 hover:border-emerald-300 dark:hover:border-emerald-700 transition-colors"
+			on:click={() => showPromptEditor = !showPromptEditor}
+		>
+			<div class="flex items-center gap-2">
+				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-gray-400">
+					<path fill-rule="evenodd" d="M4.5 2A1.5 1.5 0 003 3.5v13A1.5 1.5 0 004.5 18h11a1.5 1.5 0 001.5-1.5V7.621a1.5 1.5 0 00-.44-1.06l-4.12-4.122A1.5 1.5 0 0011.378 2H4.5z" clip-rule="evenodd" />
+				</svg>
+				<span class="text-sm font-medium text-gray-700 dark:text-gray-300">{$i18n.t('Topic & Context')}</span>
+			</div>
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-gray-400 transition-transform {showPromptEditor ? 'rotate-180' : ''}">
+				<path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" />
+			</svg>
+		</button>
+		
+		{#if showPromptEditor}
+			<div class="mt-2 p-3 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+				<textarea
+					class="w-full h-24 text-xs bg-gray-50 dark:bg-gray-900 rounded-lg p-2 border border-gray-200 dark:border-gray-700 resize-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
+					placeholder={$i18n.t('Enter the topic and context for discussion...')}
+					bind:value={prompt}
+					on:change={updateConfig}
+				></textarea>
+			</div>
+		{/if}
+	</div>
+
+	<!-- Action Buttons -->
+	<div class="mt-4 flex items-center justify-between">
+		<div class="text-xs text-gray-500 dark:text-gray-400">{$i18n.t('Configuration')}</div>
+		<div class="flex gap-2">
+			<Tooltip content={$i18n.t('Export config')}>
+				<button
+					class="p-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+					on:click={handleExport}
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-gray-500">
+						<path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
+						<path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+					</svg>
+				</button>
+			</Tooltip>
+			<Tooltip content={$i18n.t('Import config')}>
+				<button
+					class="p-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+					on:click={handleImportClick}
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-gray-500">
+						<path d="M9.25 13.25a.75.75 0 001.5 0V4.636l2.955 3.129a.75.75 0 001.09-1.03l-4.25-4.5a.75.75 0 00-1.09 0l-4.25 4.5a.75.75 0 101.09 1.03L9.25 4.636v8.614z" />
+						<path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+					</svg>
+				</button>
+			</Tooltip>
+		</div>
+	</div>
+
 	<input
 		type="file"
 		accept=".json"

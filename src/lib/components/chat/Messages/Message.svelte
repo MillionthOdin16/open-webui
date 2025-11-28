@@ -43,6 +43,7 @@
 	export let readOnly = false;
 	export let editCodeBlock = true;
 	export let topPadding = false;
+	export let isSymposium = false;
 </script>
 
 <div
@@ -75,7 +76,8 @@
 				{editCodeBlock}
 				{topPadding}
 			/>
-		{:else if (history.messages[history.messages[messageId].parentId]?.models?.length ?? 1) === 1}
+		{:else if isSymposium || (history.messages[history.messages[messageId].parentId]?.models?.length ?? 1) === 1}
+			<!-- For symposium mode, always use sequential ResponseMessage rendering -->
 			<ResponseMessage
 				{chatId}
 				{history}

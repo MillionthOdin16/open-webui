@@ -444,6 +444,11 @@ async def get_chat_by_id(id: str, user=Depends(get_verified_user)):
     chat = Chats.get_chat_by_id_and_user_id(id, user.id)
 
     if chat:
+        # Auto-start symposium if it's a symposium chat and not already running
+        if chat.mode == "symposium" and not symposium_manager.is_symposium_active(id):
+            config = chat.config or {}
+            if not config.get("paused", False):
+                await symposium_manager.start_symposium(id)
         return ChatResponse(**chat.model_dump())
 
     else:
@@ -465,6 +470,11 @@ async def update_chat_by_id(
     if chat:
         updated_chat = {**chat.chat, **form_data.chat}
         chat = Chats.update_chat_by_id(id, updated_chat)
+        
+        # Notify symposium of chat update (new user message, etc.)
+        if chat.mode == "symposium" and symposium_manager.is_symposium_active(id):
+            await symposium_manager.notify_update(id)
+        
         return ChatResponse(**chat.model_dump())
     else:
         raise HTTPException(
@@ -497,8 +507,10 @@ async def splice_chat_message(
 class SymposiumConfigForm(BaseModel):
     paused: Optional[bool] = None
     interval: Optional[int] = None
+    context_limit: Optional[int] = None
     prompt: Optional[str] = None
     models: Optional[list[str]] = None
+    rules: Optional[dict] = None
 
 
 class TriggerForm(BaseModel):
@@ -508,6 +520,11 @@ class TriggerForm(BaseModel):
 class WhisperForm(BaseModel):
     model_id: str
     content: str
+
+
+class BotStateForm(BaseModel):
+    model_id: str
+    state: str  # "active", "listening", "muted"
 
 
 @router.put("/{id}/symposium/config", response_model=Optional[ChatResponse])
@@ -526,10 +543,14 @@ async def update_symposium_config(
         config["paused"] = form_data.paused
     if form_data.interval is not None:
         config["autonomous_interval"] = form_data.interval
+    if form_data.context_limit is not None:
+        config["context_limit"] = form_data.context_limit
     if form_data.prompt is not None:
         config["prompt"] = form_data.prompt
     if form_data.models is not None:
         config["models"] = form_data.models
+    if form_data.rules is not None:
+        config["rules"] = form_data.rules
 
     chat = Chats.update_chat_config_by_id(id, config)
     await symposium_manager.notify_update(id)
@@ -563,6 +584,77 @@ async def trigger_symposium_model(
         )
 
     await symposium_manager.set_next_speaker(id, form_data.model_id)
+    return True
+
+
+@router.post("/{id}/symposium/bot-state", response_model=bool)
+async def set_bot_state(
+    id: str, form_data: BotStateForm, user=Depends(get_verified_user)
+):
+    """Set the state of a bot in a symposium (active, listening, muted)."""
+    from open_webui.core.symposium import BotState
+    
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+    
+    try:
+        state = BotState(form_data.state)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid bot state. Must be 'active', 'listening', or 'muted'.",
+        )
+    
+    await symposium_manager.set_bot_state(id, form_data.model_id, state)
+    return True
+
+
+@router.get("/{id}/symposium/status")
+async def get_symposium_status(
+    id: str, user=Depends(get_verified_user)
+):
+    """Get the current status of a symposium including bot states and stats."""
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+    
+    return {
+        "active": symposium_manager.is_symposium_active(id),
+        "current_speaker": symposium_manager.get_current_speaker(id),
+        "bot_states": symposium_manager.get_all_bot_states(id),
+        "speaking_stats": symposium_manager.get_speaking_stats(id),
+    }
+
+
+@router.post("/{id}/symposium/resume", response_model=bool)
+async def resume_symposium(
+    id: str, user=Depends(get_verified_user)
+):
+    """Resume a stopped symposium."""
+    chat = Chats.get_chat_by_id_and_user_id(id, user.id)
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+    
+    if chat.mode != "symposium":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chat is not a symposium",
+        )
+    
+    # Start the symposium if not already running
+    if not symposium_manager.is_symposium_active(id):
+        await symposium_manager.start_symposium(id)
+    
     return True
 
 
@@ -674,6 +766,10 @@ async def send_chat_message_event_by_id(
 
 @router.delete("/{id}", response_model=bool)
 async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified_user)):
+    # Stop symposium if running
+    if symposium_manager.is_symposium_active(id):
+        await symposium_manager.stop_symposium(id)
+    
     if user.role == "admin":
         chat = Chats.get_chat_by_id(id)
         for tag in chat.meta.get("tags", []):
@@ -843,6 +939,10 @@ async def archive_chat_by_id(id: str, user=Depends(get_verified_user)):
     chat = Chats.get_chat_by_id_and_user_id(id, user.id)
     if chat:
         chat = Chats.toggle_chat_archive_by_id(id)
+
+        # Stop symposium if chat is being archived
+        if chat.archived and symposium_manager.is_symposium_active(id):
+            await symposium_manager.stop_symposium(id)
 
         # Delete tags if chat is archived
         if chat.archived:
