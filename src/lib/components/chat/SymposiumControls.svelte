@@ -202,12 +202,13 @@
 		class="w-full py-3 px-4 rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2
 			{paused
 				? 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white shadow-lg shadow-emerald-500/25'
-				: 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white shadow-lg shadow-amber-500/25'}"
+				: 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white shadow-lg shadow-amber-500/25'}
+			{(!isSymposiumActive && !paused) ? 'opacity-50 cursor-not-allowed' : ''}"
 		on:click={() => {
 			paused = !paused;
 			updateConfig();
 		}}
-		disabled={!isSymposiumActive}
+		disabled={!isSymposiumActive && !paused}
 	>
 		{#if paused}
 			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
