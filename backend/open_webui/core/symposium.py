@@ -37,7 +37,7 @@ class SymposiumManager:
     def __init__(self):
         self.active_symposiums: Dict[str, asyncio.Task] = {}
         self.events: Dict[str, asyncio.Event] = {}
-        self.overrides: Dict[str, str] = {}
+        self.speaker_queues: Dict[str, List[str]] = {}
         self.whispers: Dict[str, Dict[str, str]] = {}
         # Bot states per symposium: {chat_id: {model_id: BotState}}
         self.bot_states: Dict[str, Dict[str, BotState]] = {}
@@ -49,6 +49,49 @@ class SymposiumManager:
 
     def init_app(self, app):
         self.app = app
+
+    async def _persist_state(self, chat_id: str):
+        """Save the current symposium state to the chat configuration."""
+        try:
+            chat = await run_in_threadpool(Chats.get_chat_by_id, chat_id)
+            if not chat:
+                return
+
+            config = chat.config or {}
+            symposium_config = config.get("symposium", {})
+
+            # Update state
+            symposium_config["bot_states"] = {k: v.value for k, v in self.bot_states.get(chat_id, {}).items()}
+            symposium_config["speaker_queue"] = self.speaker_queues.get(chat_id, [])
+
+            config["symposium"] = symposium_config
+            await run_in_threadpool(Chats.update_chat_config_by_id, chat_id, config)
+        except Exception as e:
+            log.error(f"Failed to persist state for {chat_id}: {e}")
+
+    async def _load_state(self, chat_id: str):
+        """Load symposium state from chat configuration."""
+        try:
+            chat = await run_in_threadpool(Chats.get_chat_by_id, chat_id)
+            if not chat or not chat.config:
+                return
+
+            symposium_config = chat.config.get("symposium", {})
+
+            # Load bot states
+            saved_states = symposium_config.get("bot_states", {})
+            self.bot_states[chat_id] = {}
+            for model_id, state_val in saved_states.items():
+                try:
+                    self.bot_states[chat_id][model_id] = BotState(state_val)
+                except ValueError:
+                    self.bot_states[chat_id][model_id] = BotState.ACTIVE
+
+            # Load speaker queue
+            self.speaker_queues[chat_id] = symposium_config.get("speaker_queue", [])
+
+        except Exception as e:
+            log.error(f"Failed to load state for {chat_id}: {e}")
 
     def get_bot_state(self, chat_id: str, model_id: str) -> BotState:
         """Get the current state of a bot in a symposium."""
@@ -62,6 +105,9 @@ class SymposiumManager:
             self.bot_states[chat_id] = {}
         self.bot_states[chat_id][model_id] = state
         
+        # Persist state change
+        await self._persist_state(chat_id)
+
         # Emit state change to clients
         await sio.emit(
             "symposium:bot_state",
@@ -93,7 +139,19 @@ class SymposiumManager:
         return stats
 
     async def set_next_speaker(self, chat_id: str, model_id: str):
-        self.overrides[chat_id] = model_id
+        # Add to queue instead of single override
+        if chat_id not in self.speaker_queues:
+            self.speaker_queues[chat_id] = []
+
+        # If model is already in queue, move to front? Or append?
+        # Force speak usually implies "Next", so insert at 0
+        if model_id in self.speaker_queues[chat_id]:
+             self.speaker_queues[chat_id].remove(model_id)
+
+        self.speaker_queues[chat_id].insert(0, model_id)
+
+        await self._persist_state(chat_id)
+
         if chat_id in self.events:
             self.events[chat_id].set()
 
@@ -140,9 +198,16 @@ class SymposiumManager:
 
         log.info(f"Starting symposium for chat {chat_id}")
         self.events[chat_id] = asyncio.Event()
+
+        # Initialize default state
         self.bot_states[chat_id] = {}
         self.speaking_history[chat_id] = []
+        self.speaker_queues[chat_id] = []
         self.current_speakers[chat_id] = None
+
+        # Load persisted state
+        await self._load_state(chat_id)
+
         task = asyncio.create_task(self.symposium_loop(chat_id))
         self.active_symposiums[chat_id] = task
         
@@ -168,9 +233,9 @@ class SymposiumManager:
         if chat_id in self.events:
             del self.events[chat_id]
         
-        self.overrides.pop(chat_id, None)
         self.whispers.pop(chat_id, None)
         self.bot_states.pop(chat_id, None)
+        self.speaker_queues.pop(chat_id, None)
         self.speaking_history.pop(chat_id, None)
         self.current_speakers.pop(chat_id, None)
         
@@ -219,16 +284,34 @@ class SymposiumManager:
                     else:
                         sorted_messages = sorted(history.values(), key=lambda x: x.get('timestamp', 0))
 
-                    next_model_id = models[0]
-                    override_model = self.overrides.pop(chat_id, None)
+                    next_model_id = None
                     was_tagged = False
 
-                    if override_model and override_model in models:
-                        next_model_id = override_model
-                        was_tagged = True
-                    elif sorted_messages:
+                    # 1. Priority: Speaker Queue (Manual triggers)
+                    queue = self.speaker_queues.get(chat_id, [])
+                    if queue:
+                        # Get next in queue, verify it is still a valid participant
+                        while queue:
+                            candidate = queue[0]
+                            if candidate in models:
+                                next_model_id = candidate
+                                queue.pop(0)
+                                await self._persist_state(chat_id)
+                                was_tagged = True # Treat forced speak like a tag (override listening)
+                                break
+                            else:
+                                # Invalid model in queue, remove
+                                queue.pop(0)
+
+                        if not queue:
+                             await self._persist_state(chat_id)
+
+                    last_msg = None
+                    if sorted_messages:
                         last_msg = sorted_messages[-1]
 
+                    # 2. Priority: Tagging (if no queue)
+                    if not next_model_id and last_msg:
                         content = last_msg.get('content', '')
                         tags = re.findall(r'@(?:"([^"]+)"|([a-zA-Z0-9_.:-]+))', content)
                         valid_tags = [t[0] or t[1] for t in tags]
@@ -238,53 +321,53 @@ class SymposiumManager:
                             for m_id in models:
                                 if tag.lower() in m_id.lower():
                                     tag_override = m_id
-                                    was_tagged = True
                                     break
                             if tag_override:
                                 break
 
                         if tag_override:
                             next_model_id = tag_override
-                        else:
-                            last_model = last_msg.get('model')
-                            if last_model in models:
-                                try:
-                                    idx = models.index(last_model)
-                                    next_model_id = models[(idx + 1) % len(models)]
-                                except ValueError:
-                                    pass
-                            else:
-                                next_model_id = models[0]
+                            was_tagged = True
+
+                    # 3. Priority: Round Robin (if no queue or tags)
+                    if not next_model_id:
+                        start_model = last_msg.get('model') if last_msg else models[-1]
+
+                        # Use find_next_active_bot to handle round-robin skipping
+                        next_model_id = self.find_next_active_bot(chat_id, models, start_model)
+
+                        # If simple round robin returned a listening bot, and we weren't tagged,
+                        # we need to skip it (find_next_active_bot only checks for ACTIVE, not LISTENING logic)
+                        # Actually find_next_active_bot checks for ACTIVE state.
+                        # If a bot is LISTENING, get_bot_state returns LISTENING, so find_next_active_bot skips it?
+                        # Let's check find_next_active_bot implementation.
+                        # It checks: if self.get_bot_state(...) == BotState.ACTIVE: return m_id
+                        # So it ALREADY skips LISTENING and MUTED bots.
+                        # So if we are here, next_model_id is guaranteed to be ACTIVE.
+
+                        # However, if next_model_id comes from Queue or Tag, it might be LISTENING or MUTED.
+                        # We need to respect "Force Speak" (Queue/Tag) even if muted?
+                        # Usually "Force Speak" overrides Mute.
                     
-                    # Check bot state and find appropriate speaker
-                    bot_state = self.get_bot_state(chat_id, next_model_id)
+                    # If we have a target model (from Queue, Tag, or RR), check if it CAN speak
+                    if next_model_id:
+                        bot_state = self.get_bot_state(chat_id, next_model_id)
+
+                        # If explicitly tagged or forced (was_tagged=True), we override LISTENING/MUTED
+                        if not was_tagged:
+                            if bot_state != BotState.ACTIVE:
+                                # This shouldn't happen for RR because find_next_active_bot filters non-ACTIVE
+                                # But double check safety
+                                next_model_id = None
                     
-                    if bot_state == BotState.MUTED:
-                        # Muted bot can't speak, find any active bot
-                        active_bot = self.find_any_active_bot(chat_id, models)
-                        if active_bot:
-                            next_model_id = active_bot
-                        else:
-                            # All bots are muted or listening, wait for update
-                            try:
-                                await asyncio.wait_for(event.wait(), timeout=interval)
-                                event.clear()
-                            except asyncio.TimeoutError:
-                                pass
-                            continue
-                    elif bot_state == BotState.LISTENING and not was_tagged:
-                        # Listening bot only responds when tagged, find next active bot
-                        active_bot = self.find_next_active_bot(chat_id, models, next_model_id)
-                        if active_bot:
-                            next_model_id = active_bot
-                        else:
-                            # No active bots available, wait
-                            try:
-                                await asyncio.wait_for(event.wait(), timeout=interval)
-                                event.clear()
-                            except asyncio.TimeoutError:
-                                pass
-                            continue
+                    if not next_model_id:
+                        # No valid speaker found (everyone muted/listening and no tags/queue)
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=interval)
+                            event.clear()
+                        except asyncio.TimeoutError:
+                            pass
+                        continue
 
                     context_limit = int(config.get('context_limit', 20))
                     recent_msgs = sorted_messages[-context_limit:]

@@ -12,6 +12,7 @@
 		temporaryChatEnabled
 	} from '$lib/stores';
 	import SymposiumStatusBar from './SymposiumStatusBar.svelte';
+	import SymposiumStage from './SymposiumStage.svelte';
 	import { tick, getContext, onMount, onDestroy, createEventDispatcher } from 'svelte';
 	const dispatch = createEventDispatcher();
 
@@ -451,15 +452,15 @@
 				<section class="w-full" aria-labelledby="chat-conversation">
 					<h2 class="sr-only" id="chat-conversation">{$i18n.t('Chat Conversation')}</h2>
 
-					<!-- Symposium Status Bar -->
+					<!-- Symposium Stage View -->
 					{#if symposiumParticipants.length > 0}
-						<SymposiumStatusBar
-							{chatId}
-							status={symposiumStatus}
-							currentModel={symposiumModel}
-							paused={symposiumPaused}
-							interval={symposiumInterval}
-							participants={symposiumParticipants}
+						<SymposiumStage
+							chat={{
+								id: chatId,
+								config: {
+									models: symposiumParticipants
+								}
+							}}
 						/>
 					{/if}
 

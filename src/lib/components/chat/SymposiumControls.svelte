@@ -185,61 +185,52 @@
 	{/if}
 
 	<!-- Main Control Button -->
-	<button
-		class="w-full py-3 px-4 rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2
-			{paused
-				? 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white shadow-lg shadow-emerald-500/25'
-				: 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white shadow-lg shadow-amber-500/25'}"
-		on:click={() => {
-			paused = !paused;
-			updateConfig();
-		}}
-	>
-		{#if paused}
-			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-				<path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
-			</svg>
-			{$i18n.t('Resume Symposium')}
-		{:else}
-			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
-				<path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z" />
-			</svg>
-			{$i18n.t('Pause Symposium')}
-		{/if}
-	</button>
-
-	<!-- Narrator/Splice Input -->
-	<div class="mt-3">
+	<div class="grid gap-3">
+		<!-- Main Control Button -->
 		<button
-			class="w-full flex items-center justify-between p-3 bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 rounded-xl border border-purple-200 dark:border-purple-800 hover:border-purple-300 dark:hover:border-purple-700 transition-colors"
-			on:click={() => showNarratorInput = !showNarratorInput}
+			class="w-full py-3 px-4 rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2
+				{paused
+					? 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white shadow-lg shadow-emerald-500/25'
+					: 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white shadow-lg shadow-amber-500/25'}"
+			on:click={() => {
+				paused = !paused;
+				updateConfig();
+			}}
 		>
-			<div class="flex items-center gap-2">
-				<span class="text-lg">📢</span>
-				<span class="text-sm font-medium text-purple-700 dark:text-purple-300">{$i18n.t('Narrator Event')}</span>
-			</div>
-			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-purple-400 transition-transform {showNarratorInput ? 'rotate-180' : ''}">
-				<path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" />
-			</svg>
+			{#if paused}
+				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+					<path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+				</svg>
+				{$i18n.t('Resume Symposium')}
+			{:else}
+				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+					<path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z" />
+				</svg>
+				{$i18n.t('Pause Symposium')}
+			{/if}
 		</button>
-		
-		{#if showNarratorInput}
-			<div class="mt-2 p-3 bg-white dark:bg-gray-800 rounded-xl border border-purple-200 dark:border-purple-700">
-				<p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{$i18n.t('Inject a narrator event into the conversation (e.g., "A dragon suddenly appears")')}</p>
-				<textarea
-					class="w-full h-20 text-sm bg-gray-50 dark:bg-gray-900 rounded-lg p-2 border border-gray-200 dark:border-gray-700 resize-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none"
-					placeholder={$i18n.t('Enter narrator text...')}
-					bind:value={narratorText}
-				></textarea>
-				<button
-					class="mt-2 w-full py-2 px-3 bg-purple-500 hover:bg-purple-600 text-white text-sm rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-					on:click={sendNarratorMessage}
-					disabled={!narratorText.trim()}
-				>
-					{$i18n.t('Inject Event')}
-				</button>
+
+		<!-- Narrator/Splice Input -->
+		<div class="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/10 dark:to-pink-900/10 rounded-xl p-3 border border-purple-200 dark:border-purple-800">
+			<div class="flex items-center gap-2 mb-2 text-purple-700 dark:text-purple-300">
+				<span class="text-lg">📢</span>
+				<span class="text-sm font-medium">{$i18n.t('Narrator (God Mode)')}</span>
 			</div>
-		{/if}
+
+			<textarea
+				class="w-full h-20 text-xs bg-white dark:bg-gray-800 rounded-lg p-2 border border-purple-100 dark:border-purple-800 resize-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none mb-2"
+				placeholder={$i18n.t('Inject an event or direction... (e.g. "Suddenly, the lights go out")')}
+				bind:value={narratorText}
+			></textarea>
+
+			<button
+				class="w-full py-1.5 bg-purple-500 hover:bg-purple-600 text-white text-xs rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+				on:click={sendNarratorMessage}
+				disabled={!narratorText.trim()}
+			>
+				{$i18n.t('Inject Event')}
+			</button>
+		</div>
 	</div>
 
 	<!-- Quick Settings Row -->
