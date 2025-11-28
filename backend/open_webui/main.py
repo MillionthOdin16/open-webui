@@ -610,14 +610,7 @@ async def lifespan(app: FastAPI):
 
     symposium_manager.init_app(app)
     # Restart active symposiums
-    with get_db() as db:
-        active_symposiums = (
-            db.query(Chat)
-            .filter(Chat.mode == "symposium", Chat.archived == False)
-            .all()
-        )
-        for chat in active_symposiums:
-            await symposium_manager.start_symposium(chat.id)
+    await symposium_manager.resume_symposiums()
 
     if app.state.config.ENABLE_BASE_MODELS_CACHE:
         await get_all_models(

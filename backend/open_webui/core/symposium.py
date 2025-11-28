@@ -10,11 +10,12 @@ from enum import Enum
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse, JSONResponse
 
-from open_webui.models.chats import Chats
+from open_webui.models.chats import Chats, Chat
 from open_webui.models.users import Users
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.socket.main import get_event_emitter, sio
 from open_webui.env import SRC_LOG_LEVELS
+from open_webui.internal.db import get_db
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
@@ -49,6 +50,35 @@ class SymposiumManager:
 
     def init_app(self, app):
         self.app = app
+
+    async def resume_symposiums(self):
+        """
+        Resume all active symposiums from the database.
+        Checks for chats with mode='symposium' that are not archived and not paused.
+        """
+        log.info("Checking for symposiums to resume...")
+        try:
+            with get_db() as db:
+                active_symposiums = (
+                    db.query(Chat)
+                    .filter(Chat.mode == "symposium", Chat.archived == False)
+                    .all()
+                )
+
+                count = 0
+                for chat in active_symposiums:
+                    config = chat.config or {}
+                    if not config.get("paused", False):
+                        # Don't save state here to avoid DB spam on startup
+                        await self.start_symposium(chat.id, save_state=False)
+                        count += 1
+                    else:
+                        log.debug(f"Symposium {chat.id} is paused, skipping auto-start.")
+
+                if count > 0:
+                    log.info(f"Resumed {count} symposiums.")
+        except Exception as e:
+            log.error(f"Error resuming symposiums: {e}")
 
     def get_bot_state(self, chat_id: str, model_id: str) -> BotState:
         """Get the current state of a bot in a symposium."""
@@ -134,11 +164,24 @@ class SymposiumManager:
                 return m_id
         return None
 
-    async def start_symposium(self, chat_id: str):
+    async def start_symposium(self, chat_id: str, save_state: bool = True):
         if chat_id in self.active_symposiums:
             return
 
         log.info(f"Starting symposium for chat {chat_id}")
+
+        # Ensure 'paused' is False in DB so it resumes on restart
+        if save_state:
+            try:
+                chat = await run_in_threadpool(Chats.get_chat_by_id, chat_id)
+                if chat:
+                    config = chat.config or {}
+                    if config.get("paused", False):
+                        config["paused"] = False
+                        await run_in_threadpool(Chats.update_chat_config_by_id, chat_id, config)
+            except Exception as e:
+                log.error(f"Failed to update chat config for {chat_id}: {e}")
+
         self.events[chat_id] = asyncio.Event()
         self.bot_states[chat_id] = {}
         self.speaking_history[chat_id] = []
@@ -152,7 +195,7 @@ class SymposiumManager:
             {"chat_id": chat_id},
         )
 
-    async def stop_symposium(self, chat_id: str):
+    async def stop_symposium(self, chat_id: str, save_state: bool = True):
         if chat_id in self.active_symposiums:
             log.info(f"Stopping symposium for chat {chat_id}")
             task = self.active_symposiums[chat_id]
@@ -163,6 +206,18 @@ class SymposiumManager:
                 log.debug(f"Symposium task {chat_id} cancelled successfully")
             finally:
                 del self.active_symposiums[chat_id]
+
+        # Update DB if needed
+        if save_state:
+            try:
+                chat = await run_in_threadpool(Chats.get_chat_by_id, chat_id)
+                if chat:
+                    config = chat.config or {}
+                    if not config.get("paused", True):
+                        config["paused"] = True
+                        await run_in_threadpool(Chats.update_chat_config_by_id, chat_id, config)
+            except Exception as e:
+                log.error(f"Failed to update chat config for {chat_id}: {e}")
 
         # Clean up all state
         if chat_id in self.events:
@@ -187,14 +242,19 @@ class SymposiumManager:
                 try:
                     chat = await run_in_threadpool(Chats.get_chat_by_id, chat_id)
                     if not chat or chat.archived:
-                        await self.stop_symposium(chat_id)
+                        # Don't save state if archived, just kill task
+                        await self.stop_symposium(chat_id, save_state=False)
                         break
 
                     config = chat.config or {}
+
+                    # Check for pause state
                     if config.get("paused", False):
-                        # Wait for event if paused, no timeout needed or long timeout
+                        # Wait for event if paused
                         try:
-                            await asyncio.wait_for(event.wait(), timeout=3600) # Check every hour or wait for event
+                            # Use a timeout to occasionally check if we should still be paused
+                            # in case the DB changed but no event was fired
+                            await asyncio.wait_for(event.wait(), timeout=60)
                             event.clear()
                         except asyncio.TimeoutError:
                             pass
@@ -210,15 +270,20 @@ class SymposiumManager:
                         continue
 
                     history = chat.chat.get('history', {}).get('messages', {})
-                    # Optimize sorting for large histories
+
+                    # Handle message history sorting
                     if len(history) > 50:
                         recent_threshold = int(time.time()) - 3600  # Last hour
                         recent_history = {k: v for k, v in history.items() 
                                           if v.get('timestamp', 0) > recent_threshold}
-                        sorted_messages = sorted(recent_history.values(), key=lambda x: x.get('timestamp', 0))
+                        if not recent_history: # Fallback if no recent messages
+                             sorted_messages = sorted(history.values(), key=lambda x: x.get('timestamp', 0))[-20:]
+                        else:
+                            sorted_messages = sorted(recent_history.values(), key=lambda x: x.get('timestamp', 0))
                     else:
                         sorted_messages = sorted(history.values(), key=lambda x: x.get('timestamp', 0))
 
+                    # 1. Check for overrides (Force Speak)
                     next_model_id = models[0]
                     override_model = self.overrides.pop(chat_id, None)
                     was_tagged = False
@@ -226,9 +291,10 @@ class SymposiumManager:
                     if override_model and override_model in models:
                         next_model_id = override_model
                         was_tagged = True
+                        log.info(f"Symposium {chat_id}: Override active for {next_model_id}")
                     elif sorted_messages:
+                        # 2. Check for Tags (@ModelName)
                         last_msg = sorted_messages[-1]
-
                         content = last_msg.get('content', '')
                         tags = re.findall(r'@(?:"([^"]+)"|([a-zA-Z0-9_.:-]+))', content)
                         valid_tags = [t[0] or t[1] for t in tags]
@@ -246,6 +312,7 @@ class SymposiumManager:
                         if tag_override:
                             next_model_id = tag_override
                         else:
+                            # 3. Round Robin
                             last_model = last_msg.get('model')
                             if last_model in models:
                                 try:
@@ -294,6 +361,11 @@ class SymposiumManager:
                     system_prompt = config.get('prompt', 'You are in a symposium.')
                     system_prompt += f"\n\nParticipants: {', '.join(models)}"
 
+                    # Add custom rules if any
+                    custom_rules = config.get('rules', {}).get('custom', '')
+                    if custom_rules:
+                        system_prompt += f"\n\nRules:\n{custom_rules}"
+
                     whisper = self.whispers.get(chat_id, {}).pop(next_model_id, None)
                     if whisper:
                         system_prompt += (
@@ -314,6 +386,11 @@ class SymposiumManager:
                         })
 
                     user = await run_in_threadpool(Users.get_user_by_id, chat.user_id)
+                    if not user:
+                        log.error(f"User {chat.user_id} not found for symposium {chat_id}")
+                        await self.stop_symposium(chat_id)
+                        break
+
                     request = MockRequest(self.app)
                     request.state.metadata = {
                         "chat_id": chat_id,
@@ -478,9 +555,9 @@ class SymposiumManager:
                 "role": "system",
                 "content": f"_{content}_",
                 "model": "system_echo",
-                "modelName": "Echo",
+                "modelName": "Narrator",
                 "timestamp": int(time.time()),
-                "type": "echo"
+                "type": "info" # Use 'info' type for distinctive styling if supported
             }
 
             await run_in_threadpool(
