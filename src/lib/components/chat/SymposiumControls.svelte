@@ -60,6 +60,11 @@
 			});
 			if (res.ok) {
 				isSymposiumActive = true;
+				// If we are resuming a dead process but it was "paused" in config, unpause it
+				if (paused) {
+					paused = false;
+					await updateConfig();
+				}
 				toast.success($i18n.t('Symposium resumed'));
 			} else {
 				toast.error($i18n.t('Failed to resume symposium'));
@@ -125,13 +130,21 @@
 		}
 	};
 
+	const onSymposiumStopped = (data: any) => {
+		if (data.chat_id === chat.id) {
+			isSymposiumActive = false;
+		}
+	};
+
 	onMount(() => {
 		checkSymposiumStatus();
 		$socket?.on('symposium:status', onSymposiumStatus);
+		$socket?.on('symposium:stopped', onSymposiumStopped);
 	});
 
 	onDestroy(() => {
 		$socket?.off('symposium:status', onSymposiumStatus);
+		$socket?.off('symposium:stopped', onSymposiumStopped);
 	});
 
 	const handleExport = () => {
@@ -167,8 +180,8 @@
 
 <div class="p-4 bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950">
 	<!-- Status Indicator -->
-	{#if !isSymposiumActive && !paused}
-		<div class="mb-3 p-3 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-800">
+	{#if !isSymposiumActive}
+		<div class="mb-3 p-3 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-800 animate-pulse">
 			<div class="flex items-center gap-2 text-red-700 dark:text-red-300">
 				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
 					<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd" />
@@ -194,6 +207,7 @@
 			paused = !paused;
 			updateConfig();
 		}}
+		disabled={!isSymposiumActive}
 	>
 		{#if paused}
 			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
