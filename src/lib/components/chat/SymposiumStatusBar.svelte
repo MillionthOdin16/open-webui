@@ -32,6 +32,29 @@
 		};
 	});
 
+	// Determine which model might speak next (simple round-robin prediction)
+	let predictedNextSpeaker: string | null = null;
+	$: {
+		if (!paused && !status && participants.length > 0) {
+			// Find active participants
+			const activeParticipants = participants.filter(id => 
+				(botStates[id] || 'active') === 'active'
+			);
+			if (activeParticipants.length > 0) {
+				// Simple prediction: next active after current or first
+				const currentIdx = currentModel ? activeParticipants.indexOf(currentModel) : -1;
+				const nextIdx = (currentIdx + 1) % activeParticipants.length;
+				predictedNextSpeaker = activeParticipants[nextIdx];
+			}
+		} else {
+			predictedNextSpeaker = null;
+		}
+	}
+
+	// Get name for predicted next speaker
+	$: predictedNextName = predictedNextSpeaker ? 
+		(participantModels.find(p => p.id === predictedNextSpeaker)?.name || 'Next bot') : null;
+
 	// Start countdown when status changes
 	$: if (status === null && !paused) {
 		startCountdown();
@@ -178,8 +201,15 @@
 						<div>
 							<div class="font-semibold text-gray-900 dark:text-white">{$i18n.t('Symposium Active')}</div>
 							{#if countdown > 0}
-								<div class="text-xs text-gray-500 dark:text-gray-400">
-									{$i18n.t('Next response in')} <span class="font-mono text-emerald-600 dark:text-emerald-400">{countdown}s</span>
+								<div class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+									{#if predictedNextName && countdown <= 5}
+										<!-- Show who's about to speak when close -->
+										<span class="animate-pulse">{predictedNextName}</span>
+										<span>{$i18n.t('speaks in')}</span>
+									{:else}
+										<span>{$i18n.t('Next response in')}</span>
+									{/if}
+									<span class="font-mono text-emerald-600 dark:text-emerald-400">{countdown}s</span>
 								</div>
 							{/if}
 						</div>
